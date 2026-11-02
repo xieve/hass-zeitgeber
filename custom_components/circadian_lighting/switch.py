@@ -48,8 +48,6 @@ CONF_LIGHTS_RGB = "lights_rgb"
 CONF_LIGHTS_XY = "lights_xy"
 CONF_LIGHTS_BRIGHT = "lights_brightness"
 CONF_DISABLE_BRIGHTNESS_ADJUST = "disable_brightness_adjust"
-CONF_MIN_BRIGHT, DEFAULT_MIN_BRIGHT = "min_brightness", 1
-CONF_MAX_BRIGHT, DEFAULT_MAX_BRIGHT = "max_brightness", 100
 CONF_SLEEP_ENTITY = "sleep_entity"
 CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_CT, DEFAULT_SLEEP_CT = "sleep_colortemp", 1000
@@ -72,12 +70,6 @@ PLATFORM_SCHEMA = vol.Schema(
         vol.Optional(CONF_LIGHTS_XY): cv.entity_ids,
         vol.Optional(CONF_LIGHTS_BRIGHT): cv.entity_ids,
         vol.Optional(CONF_DISABLE_BRIGHTNESS_ADJUST, default=False): cv.boolean,
-        vol.Optional(CONF_MIN_BRIGHT, default=DEFAULT_MIN_BRIGHT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=100)
-        ),
-        vol.Optional(CONF_MAX_BRIGHT, default=DEFAULT_MAX_BRIGHT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=100)
-        ),
         vol.Inclusive(
             CONF_SLEEP_ENTITY, "sleep", msg=SLEEP_INCLUSIVE_MSG
         ): cv.entity_id,
@@ -117,8 +109,6 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
             lights_xy=config.get(CONF_LIGHTS_XY, []),
             lights_brightness=config.get(CONF_LIGHTS_BRIGHT, []),
             disable_brightness_adjust=config.get(CONF_DISABLE_BRIGHTNESS_ADJUST),
-            min_brightness=config.get(CONF_MIN_BRIGHT),
-            max_brightness=config.get(CONF_MAX_BRIGHT),
             sleep_entity=config.get(CONF_SLEEP_ENTITY),
             sleep_state=config.get(CONF_SLEEP_STATE),
             sleep_colortemp=config.get(CONF_SLEEP_CT),
@@ -181,8 +171,6 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         lights_xy,
         lights_brightness,
         disable_brightness_adjust,
-        min_brightness,
-        max_brightness,
         sleep_entity,
         sleep_state,
         sleep_colortemp,
@@ -202,8 +190,6 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         self._hs_color = None
         self._brightness = None
         self._disable_brightness_adjust = disable_brightness_adjust
-        self._min_brightness = min_brightness
-        self._max_brightness = max_brightness
         self._sleep_entity = sleep_entity
         self._sleep_state = sleep_state
         self._sleep_colortemp = sleep_colortemp
@@ -320,15 +306,7 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         return color_xy_to_hs(*self._calc_xy())
 
     def _calc_brightness(self) -> float:
-        if self._disable_brightness_adjust:
-            return
-        if self._is_sleep():
-            return self._sleep_brightness
-        if self._circadian_lighting._percent > 0:
-            return self._max_brightness
-        delta_brightness = self._max_brightness - self._min_brightness
-        percent = (100 + self._circadian_lighting._percent) / 100
-        return (delta_brightness * percent) + self._min_brightness
+        return self._circadian_lighting._brightness
 
     async def _update_switch(self, lights=None, transition=None, force=False):
         if self._only_once and not force:

@@ -28,10 +28,27 @@ Technical notes: I had to make a lot of assumptions when writing this app
 """
 
 import bisect
-from datetime import timedelta
+from collections import deque
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from enum import StrEnum, auto
+from math import asin, cos, pi, radians, sin
+from typing import (
+    TYPE_CHECKING,
+    Generator,
+    Iterable,
+    Literal,
+    ReadOnly,
+    TypedDict,
+    cast,
+    final,
+)
 
+from astral import Observer, sun
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.typing import ConfigType
 import voluptuous as vol
 from homeassistant.components.light import ATTR_TRANSITION, VALID_TRANSITION
 from homeassistant.const import (
@@ -60,16 +77,18 @@ from packaging import version
 
 DOMAIN = "circadian_lighting"
 CIRCADIAN_LIGHTING_UPDATE_TOPIC = f"{DOMAIN}_update"
-SUN_EVENT_NOON = "solar_noon"
-SUN_EVENT_MIDNIGHT = "solar_midnight"
 
 CONF_MIN_CT, DEFAULT_MIN_CT = "min_colortemp", 2500
 CONF_MAX_CT, DEFAULT_MAX_CT = "max_colortemp", 5500
+CONF_MIN_BRIGHT, DEFAULT_MIN_BRIGHT = "min_brightness", 0
+CONF_MAX_BRIGHT, DEFAULT_MAX_BRIGHT = "max_brightness", 100
 CONF_INTERVAL, DEFAULT_INTERVAL = "interval", 300
 CONF_SUNRISE_OFFSET = "sunrise_offset"
 CONF_SUNSET_OFFSET = "sunset_offset"
+CONF_DAWN_TIME = "dawn_time"
 CONF_SUNRISE_TIME = "sunrise_time"
 CONF_SUNSET_TIME = "sunset_time"
+CONF_DUSK_TIME = "dusk_time"
 DEFAULT_TRANSITION = 60
 
 CONFIG_SCHEMA = vol.Schema(
@@ -81,6 +100,12 @@ CONFIG_SCHEMA = vol.Schema(
                 ),
                 vol.Optional(CONF_MAX_CT, default=DEFAULT_MAX_CT): vol.All(
                     vol.Coerce(int), vol.Range(min=1000, max=10000)
+                ),
+                vol.Optional(CONF_MIN_BRIGHT, default=DEFAULT_MIN_BRIGHT): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=100)
+                ),
+                vol.Optional(CONF_MAX_BRIGHT, default=DEFAULT_MAX_BRIGHT): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=100)
                 ),
                 vol.Optional(CONF_SUNRISE_OFFSET): cv.time_period_str,
                 vol.Optional(CONF_SUNSET_OFFSET): cv.time_period_str,
@@ -107,17 +132,49 @@ if version.parse(HA_VERSION) < version.parse(REQUIRED_HA_VERSION):
     )
 
 
-async def async_setup(hass, config) -> bool:
+# TODO: eventually mark this `closed=True` whenever Python 3.15 is in wide-spread use
+@final
+class SunEvents(TypedDict):
+    dawn: datetime
+    sunrise: datetime
+    golden_hour_am: datetime
+    # noon: datetime
+    golden_hour_pm: datetime
+    sunset: datetime
+    dusk: datetime
+
+
+type SunEventsKey = Literal[
+    "dawn",
+    "sunrise",
+    "golden_hour_am",
+    "golden_hour_pm",
+    "sunset",
+    "dusk",
+]
+
+
+@dataclass
+class LightState:
+    brightness: float
+    temperature: int
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Circadian Lighting platform."""
     conf = config[DOMAIN]
     hass.data[DOMAIN] = CircadianLighting(
         hass,
         min_colortemp=conf.get(CONF_MIN_CT),
         max_colortemp=conf.get(CONF_MAX_CT),
+        min_brightness=config.get(CONF_MIN_BRIGHT),
+        max_brightness=config.get(CONF_MAX_BRIGHT),
         sunrise_offset=conf.get(CONF_SUNRISE_OFFSET),
         sunset_offset=conf.get(CONF_SUNSET_OFFSET),
+        dawn_time=conf.get(CONF_DAWN_TIME),
         sunrise_time=conf.get(CONF_SUNRISE_TIME),
         sunset_time=conf.get(CONF_SUNSET_TIME),
+        dusk_time=conf.get(CONF_DUSK_TIME),
         latitude=conf.get(CONF_LATITUDE, hass.config.latitude),
         longitude=conf.get(CONF_LONGITUDE, hass.config.longitude),
         elevation=conf.get(CONF_ELEVATION, hass.config.elevation),
@@ -129,209 +186,220 @@ async def async_setup(hass, config) -> bool:
     return True
 
 
+def ease_sine(x: float):
+    return -(cos(pi * x) - 1) / 2
+
+
+def interpolate(a: float, b: float, x: float):
+    """
+    Interpolate linearly between `a` and `b` where `a <= b` and `0 <= x <= 1`
+    """
+    return a + (b - a) * x
+
+
 class CircadianLighting:
     """Calculate universal Circadian values."""
+
+    brightness: float
+    """Brightness in percent"""
 
     def __init__(
         self,
         hass,
         min_colortemp,
         max_colortemp,
+        min_brightness,
+        max_brightness,
         sunrise_offset,
         sunset_offset,
+        dawn_time,
         sunrise_time,
         sunset_time,
+        dusk_time,
         latitude,
         longitude,
         elevation,
         transition,
     ):
-        self.hass = hass
+        self.hass: HomeAssistant = hass
         self._min_colortemp = min_colortemp
         self._max_colortemp = max_colortemp
+        self._min_brightness = min_brightness
+        self._max_brightness = max_brightness
         self._sunrise_offset = sunrise_offset
         self._sunset_offset = sunset_offset
-        self._manual_sunset = sunset_time
-        self._manual_sunrise = sunrise_time
+        self._manual_dawn: time = dawn_time
+        self._manual_sunset: time = sunset_time
+        self._manual_sunrise: time = sunrise_time
+        self._manual_dusk: time = dusk_time
         self._latitude = latitude
         self._longitude = longitude
         self._elevation = elevation
         self._transition = transition
 
     async def _async_init(self, interval):
-        self._percent = await self.async_calc_percent()
-        self._colortemp = await self.async_calc_colortemp()
-        self._rgb_color = await self.async_calc_rgb()
-        self._xy_color = await self.async_calc_xy()
-
         if self._manual_sunrise is not None:
             async_track_time_change(
                 self.hass,
-                self.async_update,
+                self.async_loop,
                 hour=self._manual_sunrise.hour,
                 minute=self._manual_sunrise.minute,
                 second=self._manual_sunrise.second,
             )
         else:
-            async_track_sunrise(self.hass, self.async_update, self._sunrise_offset)
+            async_track_sunrise(self.hass, self.async_loop, self._sunrise_offset)
 
         if self._manual_sunset is not None:
             async_track_time_change(
                 self.hass,
-                self.async_update,
+                self.async_loop,
                 hour=self._manual_sunset.hour,
                 minute=self._manual_sunset.minute,
                 second=self._manual_sunset.second,
             )
         else:
-            async_track_sunset(self.hass, self.async_update, self._sunset_offset)
+            async_track_sunset(self.hass, self.async_loop, self._sunset_offset)
 
-        async_track_time_interval(self.hass, self.async_update, interval)
+        async_track_time_interval(self.hass, self.async_loop, interval)
 
-    async def _async_replace_time(self, date, key):
-        other_date = self._manual_sunrise if key == "sunrise" else self._manual_sunset
-        return date.replace(
-            hour=other_date.hour,
-            minute=other_date.minute,
-            second=other_date.second,
-            microsecond=other_date.microsecond,
-        )
-
-    async def _async_get_sun_events(self, date):
+    def _get_sun_events(self, day: date) -> SunEvents:
+        # TODO: handle invalid config where one of these is set while another one isn't
         if self._manual_sunrise is not None and self._manual_sunset is not None:
-            sunrise = await self._async_replace_time(date, "sunrise")
-            sunset = await self._async_replace_time(date, "sunset")
-            solar_noon = sunrise + (sunset - sunrise) / 2
-            solar_midnight = sunset + ((sunrise + timedelta(days=1)) - sunset) / 2
+            dawn = datetime.combine(day, self._manual_dawn)
+            sunrise = datetime.combine(day, self._manual_sunrise)
+            sunset = datetime.combine(day, self._manual_sunset)
+            dusk = datetime.combine(day, self._manual_dusk)
         else:
-            _loc = await self.hass.async_add_executor_job(
-                get_astral_location, self.hass
-            )
-            if isinstance(_loc, tuple):
-                # Astral v2.2
-                location, _ = _loc
-            else:
-                # Astral v1
-                location = _loc
-            location.name = "name"
-            location.region = "region"
-            location.latitude = self._latitude
-            location.longitude = self._longitude
-            location.elevation = self._elevation
+            observer = Observer(self._latitude, self._longitude, self._elevation)
+            dawn = sun.dawn(observer)
+            sunrise = sun.sunrise(observer)
+            sunset = sun.sunset(observer)
+            dusk = sun.dusk(observer)
 
-            if self._manual_sunrise is not None:
-                sunrise = await self._async_replace_time(date, "sunrise")
-            else:
-                sunrise = await self.hass.async_add_executor_job(location.sunrise, date)
-
-            if self._manual_sunset is not None:
-                sunset = await self._async_replace_time(date, "sunset")
-            else:
-                sunset = await self.hass.async_add_executor_job(location.sunset, date)
-
-            try:
-                solar_noon = await self.hass.async_add_executor_job(location.noon, date)
-            except AttributeError:
-                solar_noon = await self.hass.async_add_executor_job(
-                    location.solar_noon, date
-                )
-            try:
-                solar_midnight = await self.hass.async_add_executor_job(
-                    location.midnight, date
-                )
-            except AttributeError:
-                solar_midnight = await self.hass.async_add_executor_job(
-                    location.solar_midnight, date
-                )
+        events: SunEvents = {
+            "dawn": dawn,
+            "sunrise": sunrise,
+            "golden_hour_am": sunrise + (sunrise - dawn),
+            # "noon": sunrise + (sunset - sunrise) / 2,
+            "golden_hour_pm": sunset - (dusk - sunset),
+            "sunset": sunset,
+            "dusk": dusk,
+        }
 
         if self._sunrise_offset is not None:
-            sunrise = sunrise + self._sunrise_offset
+            events["sunrise"] += self._sunrise_offset
         if self._sunset_offset is not None:
-            sunset = sunset + self._sunset_offset
+            events["sunset"] += self._sunset_offset
 
-        datetimes = {
-            SUN_EVENT_SUNRISE: sunrise,
-            SUN_EVENT_SUNSET: sunset,
-            SUN_EVENT_NOON: solar_noon,
-            SUN_EVENT_MIDNIGHT: solar_midnight,
-        }
+        return events
 
-        return {
-            k: dt.astimezone(dt_util.UTC).timestamp() for k, dt in datetimes.items()
-        }
+    """
+    Returns the previous and next solar event
+    """
 
-    async def _async_relevant_events(self, now):
-        events = []
-        for days in [-1, 0, 1]:
-            sun_events = await self._async_get_sun_events(now + timedelta(days=days))
-            events.extend(list(sun_events.items()))
-        events = sorted(events, key=lambda x: x[1])
-        index_now = bisect.bisect([ts for _, ts in events], now.timestamp())
-        return dict(events[index_now - 2 : index_now + 2])
+    def _relevant_events(self, now: datetime) -> list[tuple[SunEventsKey, datetime]]:
+        events = [
+            pair
+            for days in [-1, 0, 1]
+            for pair in tuple(self._get_sun_events(now + timedelta(days=days)).items())
+        ]
+        # events is already sorted, since dicts are always ordered since Python 3.7 and
+        # we insert in the correct order.
+        # This is assuming that dawn, sunrise, noon, sunset, dusk occur in that order
+        # on any given day.
+        # FIXME: Once Python 3.15 is in use and SunEvents is a closed TypedDict,
+        # remove type: ignore hints
+        index_now = bisect.bisect(events, now, key=lambda pair: pair[1])  # type: ignore
+        return events[index_now - 1 : index_now + 1]  # type: ignore
 
-    async def async_calc_percent(self):
-        now = await self.hass.async_add_executor_job(dt_util.utcnow)
-        now_ts = await self.hass.async_add_executor_job(now.timestamp)
-        today = await self._async_relevant_events(now)
-        # Figure out where we are in time so we know which half of the
-        # parabola to calculate. We're generating a different
-        # sunset-sunrise parabola for before and after solar midnight.
-        # because it might not be half way between sunrise and sunset.
-        # We're also generating a different parabola for sunrise-sunset.
+    def update(self, now: datetime):
+        def target_state(event: SunEventsKey):
+            match event:
+                case "dawn":
+                    return LightState(self._min_brightness, self._min_colortemp)
+                case "sunrise":
+                    return LightState(self._max_brightness, self._min_colortemp)
+                case "golden_hour_am":
+                    return LightState(self._max_brightness, self._max_colortemp)
+                case "golden_hour_pm":
+                    return LightState(self._max_brightness, self._max_colortemp)
+                case "sunset":
+                    return LightState(self._max_brightness, self._min_colortemp)
+                case "dusk":
+                    return LightState(self._min_brightness, self._min_colortemp)
 
-        # sunrise -> sunset parabola
-        if today[SUN_EVENT_SUNRISE] < now_ts < today[SUN_EVENT_SUNSET]:
-            h = today[SUN_EVENT_NOON]
-            k = 100
-            # parabola before solar_noon else after solar_noon
-            x = (
-                today[SUN_EVENT_SUNRISE]
-                if now_ts < today[SUN_EVENT_NOON]
-                else today[SUN_EVENT_SUNSET]
-            )
+        events: list[tuple[SunEventsKey, datetime]] = self._relevant_events(now)
+        print(events, now)
 
-        # sunset -> sunrise parabola
-        elif today[SUN_EVENT_SUNSET] < now_ts < today[SUN_EVENT_SUNRISE]:
-            h = today[SUN_EVENT_MIDNIGHT]
-            k = -100
-            # parabola before solar_midnight else after solar_midnight
-            x = (
-                today[SUN_EVENT_SUNSET]
-                if now_ts < today[SUN_EVENT_MIDNIGHT]
-                else today[SUN_EVENT_SUNRISE]
-            )
+        [(prev_event, prev_dt), (next_event, next_dt)] = events
 
-        y = 0
-        a = (y - k) / (h - x) ** 2
-        percentage = a * (now_ts - h) ** 2 + k
-        return percentage
+        prev_target = target_state(prev_event)
+        next_target = target_state(next_event)
 
-    async def async_calc_colortemp(self):
-        if self._percent > 0:
-            delta = self._max_colortemp - self._min_colortemp
-            percent = self._percent / 100
-            return (delta * percent) + self._min_colortemp
+        if prev_target == next_target:
+            self._brightness = prev_target.brightness
+            self._colortemp = prev_target.temperature
         else:
-            return self._min_colortemp
+            eased_progress = ease_sine((now - prev_dt) / (next_dt - prev_dt))
+            if prev_target.brightness != next_target.brightness:
+                self._brightness = interpolate(
+                    prev_target.brightness, next_target.brightness, eased_progress
+                )
+            if prev_target.temperature != next_target.temperature:
+                self._colortemp = interpolate(
+                    prev_target.temperature, next_target.temperature, eased_progress
+                )
 
-    async def async_calc_rgb(self):
-        return await self.hass.async_add_executor_job(
-            color_temperature_to_rgb, self._colortemp
+        self._rgb_color = cast(
+            tuple[int, int, int],
+            tuple(int(x) for x in color_temperature_to_rgb(self._colortemp)),
         )
+        self._xy_color = color_RGB_to_xy(*self._rgb_color)
+        self._hs_color = color_xy_to_hs(*self._xy_color)
 
-    async def async_calc_xy(self):
-        rgb = await self.async_calc_rgb()
-        return await self.hass.async_add_executor_job(color_RGB_to_xy, *rgb)
-
-    async def async_calc_hs(self):
-        xy = await self.async_calc_xy()
-        return await self.hass.async_add_executor_job(color_xy_to_hs, *xy)
-
-    async def async_update(self, _=None):
+    async def async_loop(self, *_):
         """Update Circadian Values."""
-        self._percent = await self.async_calc_percent()
-        self._colortemp = await self.async_calc_colortemp()
-        self._rgb_color = await self.async_calc_rgb()
-        self._xy_color = await self.async_calc_xy()
-        self._hs_color = await self.async_calc_hs()
+        now = datetime.now()
+        self.update(now)
         async_dispatcher_send(self.hass, CIRCADIAN_LIGHTING_UPDATE_TOPIC)
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    hour = 3600
+    sunrise, sunset = 6 * hour, 20 * hour
+    noon = (sunrise + sunset) / 2
+    midnight = noon + 12 * hour
+
+    sub1 = plt.subplot(2, 1, 1)
+    sub2 = plt.subplot(2, 1, 2)
+
+    circadian_lighting = CircadianLighting(
+        None,
+        2700,
+        5000,
+        0,
+        100,
+        None,
+        None,
+        time(6),
+        time(7),
+        time(20),
+        time(21, 30),
+        0,
+        0,
+        0,
+        0,
+    )
+
+    percent = []
+    rgb = []
+    for now in (minute * 60 + 30 for minute in range(24 * 60)):
+        circadian_lighting.update(datetime.fromtimestamp(now))
+        percent.append(circadian_lighting._brightness)
+        rgb.append([int(x) for x in circadian_lighting._rgb_color])
+
+    sub1.plot(percent)
+    sub2.imshow([rgb], aspect="auto")
+    plt.show()

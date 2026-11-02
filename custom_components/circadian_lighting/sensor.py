@@ -57,7 +57,7 @@ class CircadianSensor(Entity):
     @property
     def state(self):
         """Return the state of the sensor."""
-        return self._circadian_lighting._percent
+        return self._circadian_lighting._brightness
 
     @property
     def unit_of_measurement(self):
