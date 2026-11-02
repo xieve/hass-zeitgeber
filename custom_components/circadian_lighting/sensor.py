@@ -17,7 +17,7 @@ async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
     async_add_entities: AddEntitiesCallback,
-    discovery_info = None,
+    discovery_info=None,
 ) -> None:
     """Set up the Circadian Lighting sensor."""
     circadian_lighting = hass.data.get(DOMAIN)
@@ -25,7 +25,7 @@ async def async_setup_platform(
         sensor = CircadianSensor(hass, circadian_lighting)
         async_add_entities([sensor])
 
-        async def async_update(call = None) -> None:
+        async def async_update(call=None) -> None:
             """Update component."""
             await circadian_lighting.async_update()
 

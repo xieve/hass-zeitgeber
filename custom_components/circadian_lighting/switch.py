@@ -59,7 +59,9 @@ CONF_DISABLE_STATE = "disable_state"
 CONF_INITIAL_TRANSITION, DEFAULT_INITIAL_TRANSITION = "initial_transition", 1
 CONF_ONLY_ONCE = "only_once"
 SLEEP_INCLUSIVE_MSG = f"{CONF_SLEEP_ENTITY} and {CONF_SLEEP_STATE} must be set together"
-DISABLE_INCLUSIVE_MSG = f"{CONF_DISABLE_ENTITY} and {CONF_DISABLE_STATE} must be set together"
+DISABLE_INCLUSIVE_MSG = (
+    f"{CONF_DISABLE_ENTITY} and {CONF_DISABLE_STATE} must be set together"
+)
 
 PLATFORM_SCHEMA = vol.Schema(
     {
@@ -76,7 +78,9 @@ PLATFORM_SCHEMA = vol.Schema(
         vol.Optional(CONF_MAX_BRIGHT, default=DEFAULT_MAX_BRIGHT): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=100)
         ),
-        vol.Inclusive(CONF_SLEEP_ENTITY, "sleep", msg=SLEEP_INCLUSIVE_MSG): cv.entity_id,
+        vol.Inclusive(
+            CONF_SLEEP_ENTITY, "sleep", msg=SLEEP_INCLUSIVE_MSG
+        ): cv.entity_id,
         vol.Inclusive(CONF_SLEEP_STATE, "sleep", msg=SLEEP_INCLUSIVE_MSG): vol.All(
             cv.ensure_list, [cv.string]
         ),
@@ -86,10 +90,12 @@ PLATFORM_SCHEMA = vol.Schema(
         vol.Optional(CONF_SLEEP_BRIGHT, default=DEFAULT_SLEEP_BRIGHT): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=100)
         ),
-        vol.Inclusive(CONF_DISABLE_ENTITY, "disable", msg=DISABLE_INCLUSIVE_MSG): cv.entity_id,
-        vol.Inclusive(CONF_DISABLE_STATE, "disable", msg=DISABLE_INCLUSIVE_MSG): vol.All(
-            cv.ensure_list, [cv.string]
-        ),
+        vol.Inclusive(
+            CONF_DISABLE_ENTITY, "disable", msg=DISABLE_INCLUSIVE_MSG
+        ): cv.entity_id,
+        vol.Inclusive(
+            CONF_DISABLE_STATE, "disable", msg=DISABLE_INCLUSIVE_MSG
+        ): vol.All(cv.ensure_list, [cv.string]),
         vol.Optional(
             CONF_INITIAL_TRANSITION, default=DEFAULT_INITIAL_TRANSITION
         ): VALID_TRANSITION,
@@ -269,7 +275,11 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
     @property
     def extra_state_attributes(self):
         """Return the attributes of the switch."""
-        return {"hs_color": self._hs_color, "brightness": self._brightness, "colortemp": self._color_temperature()}
+        return {
+            "hs_color": self._hs_color,
+            "brightness": self._brightness,
+            "colortemp": self._color_temperature(),
+        }
 
     async def async_turn_on(self, **kwargs):
         """Turn on circadian lighting."""
@@ -417,9 +427,13 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         new_state = event.data["new_state"]
 
         if not new_state or new_state.state != "on":
-            _LOGGER.debug("Ignoring state change for %s: new state is %s", entity_id, new_state.state if new_state else "None")
+            _LOGGER.debug(
+                "Ignoring state change for %s: new state is %s",
+                entity_id,
+                new_state.state if new_state else "None",
+            )
             return  # Exit early if new_state is None or not "on"
-    
+
         if old_state is None or old_state.state != "on":
             _LOGGER.debug(_difference_between_states(old_state, new_state))
             await self._force_update_switch(lights=[entity_id])

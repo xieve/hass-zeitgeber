@@ -102,7 +102,10 @@ CONFIG_SCHEMA = vol.Schema(
 REQUIRED_HA_VERSION = "2024.1.0"
 
 if version.parse(HA_VERSION) < version.parse(REQUIRED_HA_VERSION):
-    raise RuntimeError(f"This integration requires Home Assistant {REQUIRED_HA_VERSION} or newer.")
+    raise RuntimeError(
+        f"This integration requires Home Assistant {REQUIRED_HA_VERSION} or newer."
+    )
+
 
 async def async_setup(hass, config) -> bool:
     """Set up the Circadian Lighting platform."""
@@ -121,9 +124,7 @@ async def async_setup(hass, config) -> bool:
         transition=conf.get(ATTR_TRANSITION),
     )
     await hass.data[DOMAIN]._async_init(interval=conf.get(CONF_INTERVAL))
-    hass.async_create_task(
-        async_load_platform(hass, "sensor", DOMAIN, {}, config)
-    )
+    hass.async_create_task(async_load_platform(hass, "sensor", DOMAIN, {}, config))
 
     return True
 
@@ -203,7 +204,9 @@ class CircadianLighting:
             solar_noon = sunrise + (sunset - sunrise) / 2
             solar_midnight = sunset + ((sunrise + timedelta(days=1)) - sunset) / 2
         else:
-            _loc = await self.hass.async_add_executor_job(get_astral_location, self.hass)
+            _loc = await self.hass.async_add_executor_job(
+                get_astral_location, self.hass
+            )
             if isinstance(_loc, tuple):
                 # Astral v2.2
                 location, _ = _loc
@@ -229,11 +232,17 @@ class CircadianLighting:
             try:
                 solar_noon = await self.hass.async_add_executor_job(location.noon, date)
             except AttributeError:
-                solar_noon = await self.hass.async_add_executor_job(location.solar_noon, date)
+                solar_noon = await self.hass.async_add_executor_job(
+                    location.solar_noon, date
+                )
             try:
-                solar_midnight = await self.hass.async_add_executor_job(location.midnight, date)
+                solar_midnight = await self.hass.async_add_executor_job(
+                    location.midnight, date
+                )
             except AttributeError:
-                solar_midnight = await self.hass.async_add_executor_job(location.solar_midnight, date)
+                solar_midnight = await self.hass.async_add_executor_job(
+                    location.solar_midnight, date
+                )
 
         if self._sunrise_offset is not None:
             sunrise = sunrise + self._sunrise_offset
@@ -306,7 +315,9 @@ class CircadianLighting:
             return self._min_colortemp
 
     async def async_calc_rgb(self):
-        return await self.hass.async_add_executor_job(color_temperature_to_rgb, self._colortemp)
+        return await self.hass.async_add_executor_job(
+            color_temperature_to_rgb, self._colortemp
+        )
 
     async def async_calc_xy(self):
         rgb = await self.async_calc_rgb()
