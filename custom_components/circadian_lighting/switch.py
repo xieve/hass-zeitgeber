@@ -5,6 +5,7 @@ Circadian Lighting Switch for Home-Assistant.
 import asyncio
 import logging
 from itertools import repeat
+from typing import TYPE_CHECKING, Optional, cast
 
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
@@ -38,6 +39,9 @@ from homeassistant.util.color import (
 )
 
 from . import CIRCADIAN_LIGHTING_UPDATE_TOPIC, DOMAIN
+
+if TYPE_CHECKING:
+    from . import CircadianLighting
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,7 +102,7 @@ PLATFORM_SCHEMA = vol.Schema(
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     """Set up the Circadian Lighting switches."""
-    circadian_lighting = hass.data.get(DOMAIN)
+    circadian_lighting = cast(Optional[CircadianLighting], hass.data.get(DOMAIN))
     if circadian_lighting is not None:
         switch = CircadianSwitch(
             hass,
@@ -182,7 +186,7 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
     ):
         """Initialize the Circadian Lighting switch."""
         self.hass = hass
-        self._circadian_lighting = circadian_lighting
+        self._circadian_lighting: CircadianLighting = circadian_lighting
         self._name = name
         self._entity_id = f"switch.circadian_lighting_{slugify(name)}"
         self._state = None

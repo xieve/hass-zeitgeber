@@ -2,6 +2,8 @@
 Circadian Lighting Sensor for Home-Assistant.
 """
 
+from typing import TYPE_CHECKING, Optional, cast
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
@@ -9,6 +11,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType
 
 from . import CIRCADIAN_LIGHTING_UPDATE_TOPIC, DOMAIN
+
+if TYPE_CHECKING:
+    from . import CircadianLighting
 
 ICON = "mdi:theme-light-dark"
 
@@ -20,14 +25,14 @@ async def async_setup_platform(
     discovery_info=None,
 ) -> None:
     """Set up the Circadian Lighting sensor."""
-    circadian_lighting = hass.data.get(DOMAIN)
+    circadian_lighting = cast(Optional[CircadianLighting], hass.data.get(DOMAIN))
     if circadian_lighting is not None:
         sensor = CircadianSensor(hass, circadian_lighting)
         async_add_entities([sensor])
 
         async def async_update(call=None) -> None:
             """Update component."""
-            await circadian_lighting.async_update()
+            await circadian_lighting.async_loop()
 
         service_name = "values_update"
         hass.services.async_register(DOMAIN, service_name, async_update)
@@ -38,7 +43,7 @@ class CircadianSensor(Entity):
 
     def __init__(self, hass, circadian_lighting):
         """Initialize the Circadian Lighting sensor."""
-        self._circadian_lighting = circadian_lighting
+        self._circadian_lighting: CircadianLighting = circadian_lighting
         self._name = "Circadian Values"
         self._entity_id = "sensor.circadian_values"
         self._unit_of_measurement = "%"

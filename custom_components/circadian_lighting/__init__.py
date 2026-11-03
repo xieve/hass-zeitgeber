@@ -38,7 +38,9 @@ from typing import (
     Generator,
     Iterable,
     Literal,
+    Mapping,
     ReadOnly,
+    Sequence,
     TypedDict,
     cast,
     final,
@@ -131,19 +133,6 @@ if version.parse(HA_VERSION) < version.parse(REQUIRED_HA_VERSION):
         f"This integration requires Home Assistant {REQUIRED_HA_VERSION} or newer."
     )
 
-
-# TODO: eventually mark this `closed=True` whenever Python 3.15 is in wide-spread use
-@final
-class SunEvents(TypedDict):
-    dawn: datetime
-    sunrise: datetime
-    golden_hour_am: datetime
-    # noon: datetime
-    golden_hour_pm: datetime
-    sunset: datetime
-    dusk: datetime
-
-
 type SunEventsKey = Literal[
     "dawn",
     "sunrise",
@@ -152,6 +141,8 @@ type SunEventsKey = Literal[
     "sunset",
     "dusk",
 ]
+type SunEvents = dict[SunEventsKey, datetime]
+type ManualConfigTimes = dict[SunEventsKey, time]
 
 
 @dataclass
@@ -228,34 +219,32 @@ class CircadianLighting:
         self._max_brightness = max_brightness
         self._sunrise_offset = sunrise_offset
         self._sunset_offset = sunset_offset
-        self._manual_dawn: time = dawn_time
-        self._manual_sunset: time = sunset_time
-        self._manual_sunrise: time = sunrise_time
-        self._manual_dusk: time = dusk_time
+        # FIXME: this needs to be initialized from the saved config values
+        self._manual_config_times: ManualConfigTimes = {}
         self._latitude = latitude
         self._longitude = longitude
         self._elevation = elevation
         self._transition = transition
 
     async def _async_init(self, interval):
-        if self._manual_sunrise is not None:
+        if self._manual_config_times["sunrise"] is not None:
             async_track_time_change(
                 self.hass,
                 self.async_loop,
-                hour=self._manual_sunrise.hour,
-                minute=self._manual_sunrise.minute,
-                second=self._manual_sunrise.second,
+                hour=self._manual_config_times["sunrise"].hour,
+                minute=self._manual_config_times["sunrise"].minute,
+                second=self._manual_config_times["sunrise"].second,
             )
         else:
             async_track_sunrise(self.hass, self.async_loop, self._sunrise_offset)
 
-        if self._manual_sunset is not None:
+        if self._manual_config_times["sunset"] is not None:
             async_track_time_change(
                 self.hass,
                 self.async_loop,
-                hour=self._manual_sunset.hour,
-                minute=self._manual_sunset.minute,
-                second=self._manual_sunset.second,
+                hour=self._manual_config_times["sunset"].hour,
+                minute=self._manual_config_times["sunset"].minute,
+                second=self._manual_config_times["sunset"].second,
             )
         else:
             async_track_sunset(self.hass, self.async_loop, self._sunset_offset)
@@ -263,12 +252,11 @@ class CircadianLighting:
         async_track_time_interval(self.hass, self.async_loop, interval)
 
     def _get_sun_events(self, day: date) -> SunEvents:
-        # TODO: handle invalid config where one of these is set while another one isn't
-        if self._manual_sunrise is not None and self._manual_sunset is not None:
-            dawn = datetime.combine(day, self._manual_dawn)
-            sunrise = datetime.combine(day, self._manual_sunrise)
-            sunset = datetime.combine(day, self._manual_sunset)
-            dusk = datetime.combine(day, self._manual_dusk)
+        if self._manual_config_times["sunrise"] is not None and self._manual_config_times["sunset"] is not None:
+            dawn = datetime.combine(day, self._manual_config_times["dawn"])
+            sunrise = datetime.combine(day, self._manual_config_times["sunrise"])
+            sunset = datetime.combine(day, self._manual_config_times["sunset"])
+            dusk = datetime.combine(day, self._manual_config_times["dusk"])
         else:
             observer = Observer(self._latitude, self._longitude, self._elevation)
             dawn = sun.dawn(observer)
@@ -293,11 +281,10 @@ class CircadianLighting:
 
         return events
 
-    """
-    Returns the previous and next solar event
-    """
-
     def _relevant_events(self, now: datetime) -> list[tuple[SunEventsKey, datetime]]:
+        """
+        Returns the previous and next solar event
+        """
         events = [
             pair
             for days in [-1, 0, 1]
@@ -307,10 +294,8 @@ class CircadianLighting:
         # we insert in the correct order.
         # This is assuming that dawn, sunrise, noon, sunset, dusk occur in that order
         # on any given day.
-        # FIXME: Once Python 3.15 is in use and SunEvents is a closed TypedDict,
-        # remove type: ignore hints
-        index_now = bisect.bisect(events, now, key=lambda pair: pair[1])  # type: ignore
-        return events[index_now - 1 : index_now + 1]  # type: ignore
+        index_now = bisect.bisect(events, now, key=lambda pair: pair[1])
+        return events[index_now - 1 : index_now + 1]
 
     def update(self, now: datetime):
         def target_state(event: SunEventsKey):

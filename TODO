@@ -1,0 +1,4 @@
+- [ ] move runtime data from data to runtime_data
+- [ ] config flow
+- [ ] i can actually fix the original turn-off problem (iirc) with context ids
+- [ ] Circadian Lighting -> Zeitgeber
