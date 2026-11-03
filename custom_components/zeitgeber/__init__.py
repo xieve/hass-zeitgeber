@@ -1,5 +1,5 @@
 """
-Circadian Lighting Component for Home-Assistant.
+zeitgeber Component for Home-Assistant.
 
 This component calculates color temperature and brightness to synchronize
 your color changing lights with perceived color temperature of the sky throughout
@@ -77,8 +77,8 @@ from homeassistant.util.color import (
 )
 from packaging import version
 
-DOMAIN = "circadian_lighting"
-CIRCADIAN_LIGHTING_UPDATE_TOPIC = f"{DOMAIN}_update"
+DOMAIN = "zeitgeber"
+ZEITGEBER_UPDATE_TOPIC = f"{DOMAIN}_update"
 
 CONF_MIN_CT, DEFAULT_MIN_CT = "min_colortemp", 2500
 CONF_MAX_CT, DEFAULT_MAX_CT = "max_colortemp", 5500
@@ -152,9 +152,9 @@ class LightState:
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the Circadian Lighting platform."""
+    """Set up the zeitgeber platform."""
     conf = config[DOMAIN]
-    hass.data[DOMAIN] = CircadianLighting(
+    hass.data[DOMAIN] = Zeitgeber(
         hass,
         min_colortemp=conf.get(CONF_MIN_CT),
         max_colortemp=conf.get(CONF_MAX_CT),
@@ -188,8 +188,8 @@ def interpolate(a: float, b: float, x: float):
     return a + (b - a) * x
 
 
-class CircadianLighting:
-    """Calculate universal Circadian values."""
+class Zeitgeber:
+    """Calculate universal zeitgeber values."""
 
     brightness: float
     """Brightness in percent"""
@@ -343,10 +343,10 @@ class CircadianLighting:
         self._hs_color = color_xy_to_hs(*self._xy_color)
 
     async def async_loop(self, *_):
-        """Update Circadian Values."""
+        """Update zeitgeber values."""
         now = datetime.now()
         self.update(now)
-        async_dispatcher_send(self.hass, CIRCADIAN_LIGHTING_UPDATE_TOPIC)
+        async_dispatcher_send(self.hass, ZEITGEBER_UPDATE_TOPIC)
 
 
 if __name__ == "__main__":
@@ -360,7 +360,7 @@ if __name__ == "__main__":
     sub1 = plt.subplot(2, 1, 1)
     sub2 = plt.subplot(2, 1, 2)
 
-    circadian_lighting = CircadianLighting(
+    zeitgeber = Zeitgeber(
         None,
         2700,
         5000,
@@ -381,9 +381,9 @@ if __name__ == "__main__":
     percent = []
     rgb = []
     for now in (minute * 60 + 30 for minute in range(24 * 60)):
-        circadian_lighting.update(datetime.fromtimestamp(now))
-        percent.append(circadian_lighting._brightness)
-        rgb.append([int(x) for x in circadian_lighting._rgb_color])
+        zeitgeber.update(datetime.fromtimestamp(now))
+        percent.append(zeitgeber._brightness)
+        rgb.append([int(x) for x in zeitgeber._rgb_color])
 
     sub1.plot(percent)
     sub2.imshow([rgb], aspect="auto")

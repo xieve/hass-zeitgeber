@@ -1,0 +1,8 @@
+{
+    "services": {
+        "values_update": {
+            "name": "Update zeitgeber",
+            "description": "Updates values for zeitgeber."
+        }
+    }
+}

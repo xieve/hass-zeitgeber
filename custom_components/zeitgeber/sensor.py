@@ -1,5 +1,5 @@
 """
-Circadian Lighting Sensor for Home-Assistant.
+Zeitgeber Sensor for Home-Assistant.
 """
 
 from typing import TYPE_CHECKING, Optional, cast
@@ -10,10 +10,10 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType
 
-from . import CIRCADIAN_LIGHTING_UPDATE_TOPIC, DOMAIN
+from . import ZEITGEBER_UPDATE_TOPIC, DOMAIN
 
 if TYPE_CHECKING:
-    from . import CircadianLighting
+    from . import Zeitgeber
 
 ICON = "mdi:theme-light-dark"
 
@@ -24,28 +24,28 @@ async def async_setup_platform(
     async_add_entities: AddEntitiesCallback,
     discovery_info=None,
 ) -> None:
-    """Set up the Circadian Lighting sensor."""
-    circadian_lighting = cast(Optional[CircadianLighting], hass.data.get(DOMAIN))
-    if circadian_lighting is not None:
-        sensor = CircadianSensor(hass, circadian_lighting)
+    """Set up the Zeitgeber sensor."""
+    zeitgeber = cast(Optional[Zeitgeber], hass.data.get(DOMAIN))
+    if zeitgeber is not None:
+        sensor = ZeitgeberSensor(hass, zeitgeber)
         async_add_entities([sensor])
 
         async def async_update(call=None) -> None:
             """Update component."""
-            await circadian_lighting.async_loop()
+            await zeitgeber.async_loop()
 
         service_name = "values_update"
         hass.services.async_register(DOMAIN, service_name, async_update)
 
 
-class CircadianSensor(Entity):
-    """Representation of a Circadian Lighting sensor."""
+class ZeitgeberSensor(Entity):
+    """Representation of a Zeitgeber sensor."""
 
-    def __init__(self, hass, circadian_lighting):
-        """Initialize the Circadian Lighting sensor."""
-        self._circadian_lighting: CircadianLighting = circadian_lighting
-        self._name = "Circadian Values"
-        self._entity_id = "sensor.circadian_values"
+    def __init__(self, hass, zeitgeber):
+        """Initialize the Zeitgeber sensor."""
+        self._zeitgeber: Zeitgeber = zeitgeber
+        self._name = "Zeitgeber Values"
+        self._entity_id = "sensor.zeitgeber_values"
         self._unit_of_measurement = "%"
         self._icon = ICON
 
@@ -62,7 +62,7 @@ class CircadianSensor(Entity):
     @property
     def state(self):
         """Return the state of the sensor."""
-        return self._circadian_lighting._brightness
+        return self._zeitgeber._brightness
 
     @property
     def unit_of_measurement(self):
@@ -76,15 +76,15 @@ class CircadianSensor(Entity):
 
     @property
     def hs_color(self):
-        return self._circadian_lighting._hs_color
+        return self._zeitgeber._hs_color
 
     @property
     def extra_state_attributes(self):
         """Return the attributes of the sensor."""
         return {
-            "colortemp": self._circadian_lighting._colortemp,
-            "rgb_color": self._circadian_lighting._rgb_color,
-            "xy_color": self._circadian_lighting._xy_color,
+            "colortemp": self._zeitgeber._colortemp,
+            "rgb_color": self._zeitgeber._rgb_color,
+            "xy_color": self._zeitgeber._xy_color,
         }
 
     @property
@@ -93,10 +93,10 @@ class CircadianSensor(Entity):
         return False
 
     async def async_added_to_hass(self) -> None:
-        """Connect dispatcher to signal from CircadianLighting object."""
+        """Connect dispatcher to signal from Zeitgeber object."""
         self.async_on_remove(
             async_dispatcher_connect(
-                self.hass, CIRCADIAN_LIGHTING_UPDATE_TOPIC, self._update_callback
+                self.hass, ZEITGEBER_UPDATE_TOPIC, self._update_callback
             )
         )
 

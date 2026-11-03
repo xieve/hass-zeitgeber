@@ -42,7 +42,7 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           python = pkgs.${pythonAttr};
-          domain = "circadian_lighting";
+          domain = "zeitgeber";
         in
         {
           default = pkgs.buildHomeAssistantComponent (

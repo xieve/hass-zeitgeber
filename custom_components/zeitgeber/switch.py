@@ -1,5 +1,5 @@
 """
-Circadian Lighting Switch for Home-Assistant.
+Zeitgeber Switch for Home-Assistant.
 """
 
 import asyncio
@@ -38,10 +38,10 @@ from homeassistant.util.color import (
     color_xy_to_hs,
 )
 
-from . import CIRCADIAN_LIGHTING_UPDATE_TOPIC, DOMAIN
+from . import ZEITGEBER_UPDATE_TOPIC, DOMAIN
 
 if TYPE_CHECKING:
-    from . import CircadianLighting
+    from . import Zeitgeber
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,8 +67,8 @@ DISABLE_INCLUSIVE_MSG = (
 
 PLATFORM_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_PLATFORM): "circadian_lighting",
-        vol.Optional(CONF_NAME, default="Circadian Lighting"): cv.string,
+        vol.Required(CONF_PLATFORM): "zeitgeber",
+        vol.Optional(CONF_NAME, default="Zeitgeber"): cv.string,
         vol.Optional(CONF_LIGHTS_CT): cv.entity_ids,
         vol.Optional(CONF_LIGHTS_RGB): cv.entity_ids,
         vol.Optional(CONF_LIGHTS_XY): cv.entity_ids,
@@ -101,12 +101,12 @@ PLATFORM_SCHEMA = vol.Schema(
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Set up the Circadian Lighting switches."""
-    circadian_lighting = cast(Optional[CircadianLighting], hass.data.get(DOMAIN))
-    if circadian_lighting is not None:
-        switch = CircadianSwitch(
+    """Set up the Zeitgeber switches."""
+    zeitgeber = cast(Optional[Zeitgeber], hass.data.get(DOMAIN))
+    if zeitgeber is not None:
+        switch = ZeitgeberSwitch(
             hass,
-            circadian_lighting,
+            zeitgeber,
             name=config.get(CONF_NAME),
             lights_ct=config.get(CONF_LIGHTS_CT, []),
             lights_rgb=config.get(CONF_LIGHTS_RGB, []),
@@ -162,13 +162,13 @@ def _difference_between_states(from_state, to_state):
         )
 
 
-class CircadianSwitch(SwitchEntity, RestoreEntity):
-    """Representation of a Circadian Lighting switch."""
+class ZeitgeberSwitch(SwitchEntity, RestoreEntity):
+    """Representation of a Zeitgeber switch."""
 
     def __init__(
         self,
         hass,
-        circadian_lighting,
+        zeitgeber,
         name,
         lights_ct,
         lights_rgb,
@@ -184,11 +184,11 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         initial_transition,
         only_once,
     ):
-        """Initialize the Circadian Lighting switch."""
+        """Initialize the Zeitgeber switch."""
         self.hass = hass
-        self._circadian_lighting: CircadianLighting = circadian_lighting
+        self._zeitgeber: Zeitgeber = zeitgeber
         self._name = name
-        self._entity_id = f"switch.circadian_lighting_{slugify(name)}"
+        self._entity_id = f"switch.zeitgeber_{slugify(name)}"
         self._state = None
         self._icon = ICON
         self._hs_color = None
@@ -221,7 +221,7 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
 
     @property
     def is_on(self):
-        """Return true if circadian lighting is on."""
+        """Return true if zeitgeber is on."""
         return self._state
 
     async def async_added_to_hass(self):
@@ -229,7 +229,7 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         # Add callback
         self.async_on_remove(
             async_dispatcher_connect(
-                self.hass, CIRCADIAN_LIGHTING_UPDATE_TOPIC, self._update_switch
+                self.hass, ZEITGEBER_UPDATE_TOPIC, self._update_switch
             )
         )
 
@@ -272,12 +272,12 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         }
 
     async def async_turn_on(self, **kwargs):
-        """Turn on circadian lighting."""
+        """Turn on zeitgeber."""
         self._state = True
         await self._force_update_switch()
 
     async def async_turn_off(self, **kwargs):
-        """Turn off circadian lighting."""
+        """Turn off zeitgeber."""
         self._state = False
         self._hs_color = None
         self._brightness = None
@@ -295,7 +295,7 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
 
     def _color_temperature(self):
         return (
-            self._circadian_lighting._colortemp
+            self._zeitgeber._colortemp
             if not self._is_sleep()
             else self._sleep_colortemp
         )
@@ -310,7 +310,7 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
         return color_xy_to_hs(*self._calc_xy())
 
     def _calc_brightness(self) -> float:
-        return self._circadian_lighting._brightness
+        return self._zeitgeber._brightness
 
     async def _update_switch(self, lights=None, transition=None, force=False):
         if self._only_once and not force:
@@ -369,7 +369,7 @@ class CircadianSwitch(SwitchEntity, RestoreEntity):
             return
 
         if transition is None:
-            transition = self._circadian_lighting._transition
+            transition = self._zeitgeber._transition
 
         tasks = []
         for light in lights:

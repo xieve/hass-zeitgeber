@@ -1,0 +1,12 @@
+{
+  "domain": "zeitgeber",
+  "name": "zeitgeber",
+  "codeowners": ["@claytonjn"],
+  "dependencies": ["time", "sensor", "switch"],
+  "documentation": "https://github.com/xieve/hass-zeitgeber",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/xieve/hass-zeitgeber/issues",
+  "requirements": [],
+  "version": "2.1.7",
+  "config_flow": true
+}
