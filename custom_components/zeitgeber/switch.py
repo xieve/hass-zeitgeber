@@ -3,45 +3,36 @@ Zeitgeber Switch for Home-Assistant.
 """
 
 import asyncio
+from datetime import timedelta
+from functools import cached_property
 import logging
-from itertools import repeat
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Any
 
-import homeassistant.helpers.config_validation as cv
-import voluptuous as vol
-from homeassistant.components.light import (
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.components.light import is_on
+from homeassistant.components.light.const import (
     ATTR_BRIGHTNESS,
     ATTR_COLOR_TEMP_KELVIN,
     ATTR_RGB_COLOR,
     ATTR_TRANSITION,
     ATTR_XY_COLOR,
-    VALID_TRANSITION,
-    is_on,
+    ATTR_HS_COLOR,
 )
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import (
     ATTR_ENTITY_ID,
-    CONF_NAME,
-    CONF_PLATFORM,
     SERVICE_TURN_ON,
-    STATE_ON,
 )
-from homeassistant.core import CoreState, Event, EventStateChangedData
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.util import slugify
-from homeassistant.util.color import (
-    color_RGB_to_xy,
-    color_temperature_to_rgb,
-    color_xy_to_hs,
-)
 
-from . import ZEITGEBER_UPDATE_TOPIC, DOMAIN
+from .const import Conf
 
-if TYPE_CHECKING:
-    from . import Zeitgeber
+from .entity import ZeitgeberEntity
+
+from . import ZeitgeberCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,68 +56,15 @@ DISABLE_INCLUSIVE_MSG = (
     f"{CONF_DISABLE_ENTITY} and {CONF_DISABLE_STATE} must be set together"
 )
 
-PLATFORM_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_PLATFORM): "zeitgeber",
-        vol.Optional(CONF_NAME, default="Zeitgeber"): cv.string,
-        vol.Optional(CONF_LIGHTS_CT): cv.entity_ids,
-        vol.Optional(CONF_LIGHTS_RGB): cv.entity_ids,
-        vol.Optional(CONF_LIGHTS_XY): cv.entity_ids,
-        vol.Optional(CONF_LIGHTS_BRIGHT): cv.entity_ids,
-        vol.Optional(CONF_DISABLE_BRIGHTNESS_ADJUST, default=False): cv.boolean,
-        vol.Inclusive(
-            CONF_SLEEP_ENTITY, "sleep", msg=SLEEP_INCLUSIVE_MSG
-        ): cv.entity_id,
-        vol.Inclusive(CONF_SLEEP_STATE, "sleep", msg=SLEEP_INCLUSIVE_MSG): vol.All(
-            cv.ensure_list, [cv.string]
-        ),
-        vol.Optional(CONF_SLEEP_CT, default=DEFAULT_SLEEP_CT): vol.All(
-            vol.Coerce(int), vol.Range(min=1000, max=10000)
-        ),
-        vol.Optional(CONF_SLEEP_BRIGHT, default=DEFAULT_SLEEP_BRIGHT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=100)
-        ),
-        vol.Inclusive(
-            CONF_DISABLE_ENTITY, "disable", msg=DISABLE_INCLUSIVE_MSG
-        ): cv.entity_id,
-        vol.Inclusive(
-            CONF_DISABLE_STATE, "disable", msg=DISABLE_INCLUSIVE_MSG
-        ): vol.All(cv.ensure_list, [cv.string]),
-        vol.Optional(
-            CONF_INITIAL_TRANSITION, default=DEFAULT_INITIAL_TRANSITION
-        ): VALID_TRANSITION,
-        vol.Optional(CONF_ONLY_ONCE, default=False): cv.boolean,
-    }
-)
 
-
-def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Set up the Zeitgeber switches."""
-    zeitgeber = cast(Optional[Zeitgeber], hass.data.get(DOMAIN))
-    if zeitgeber is not None:
-        switch = ZeitgeberSwitch(
-            hass,
-            zeitgeber,
-            name=config.get(CONF_NAME),
-            lights_ct=config.get(CONF_LIGHTS_CT, []),
-            lights_rgb=config.get(CONF_LIGHTS_RGB, []),
-            lights_xy=config.get(CONF_LIGHTS_XY, []),
-            lights_brightness=config.get(CONF_LIGHTS_BRIGHT, []),
-            disable_brightness_adjust=config.get(CONF_DISABLE_BRIGHTNESS_ADJUST),
-            sleep_entity=config.get(CONF_SLEEP_ENTITY),
-            sleep_state=config.get(CONF_SLEEP_STATE),
-            sleep_colortemp=config.get(CONF_SLEEP_CT),
-            sleep_brightness=config.get(CONF_SLEEP_BRIGHT),
-            disable_entity=config.get(CONF_DISABLE_ENTITY),
-            disable_state=config.get(CONF_DISABLE_STATE),
-            initial_transition=config.get(CONF_INITIAL_TRANSITION),
-            only_once=config.get(CONF_ONLY_ONCE),
-        )
-        add_devices([switch])
-
-        return True
-    else:
-        return False
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry[ZeitgeberCoordinator],
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the Zeitgeber sensor."""
+    switch = ZeitgeberSwitch(entry.runtime_data)
+    async_add_entities([switch])
 
 
 def _difference_between_states(from_state, to_state):
@@ -162,232 +100,102 @@ def _difference_between_states(from_state, to_state):
         )
 
 
-class ZeitgeberSwitch(SwitchEntity, RestoreEntity):
+class ZeitgeberSwitch(  # pyright: ignore[reportIncompatibleVariableOverride]
+    SwitchEntity, RestoreEntity, ZeitgeberEntity
+):
     """Representation of a Zeitgeber switch."""
 
-    def __init__(
-        self,
-        hass,
-        zeitgeber,
-        name,
-        lights_ct,
-        lights_rgb,
-        lights_xy,
-        lights_brightness,
-        disable_brightness_adjust,
-        sleep_entity,
-        sleep_state,
-        sleep_colortemp,
-        sleep_brightness,
-        disable_entity,
-        disable_state,
-        initial_transition,
-        only_once,
-    ):
+    def __init__(self, coordinator: ZeitgeberCoordinator) -> None:
         """Initialize the Zeitgeber switch."""
-        self.hass = hass
-        self._zeitgeber: Zeitgeber = zeitgeber
-        self._name = name
-        self._entity_id = f"switch.zeitgeber_{slugify(name)}"
-        self._state = None
-        self._icon = ICON
-        self._hs_color = None
-        self._brightness = None
-        self._disable_brightness_adjust = disable_brightness_adjust
-        self._sleep_entity = sleep_entity
-        self._sleep_state = sleep_state
-        self._sleep_colortemp = sleep_colortemp
-        self._sleep_brightness = sleep_brightness
-        self._disable_entity = disable_entity
-        self._disable_state = disable_state
-        self._initial_transition = initial_transition
-        self._only_once = only_once
-        self._warned_missing = False
-        self._lights_types = dict(zip(lights_ct, repeat("ct")))
-        self._lights_types.update(zip(lights_rgb, repeat("rgb")))
-        self._lights_types.update(zip(lights_xy, repeat("xy")))
-        self._lights_types.update(zip(lights_brightness, repeat("brightness")))
-        self._lights = list(self._lights_types.keys())
+        super().__init__(coordinator)
+        self._attr_icon = ICON
+        self._attr_name = "switch"
+        assert coordinator.config_entry is not None
+        self._attr_unique_id = f"{coordinator.config_entry.data["uuid"][-4:]}_switch"
 
-    @property
-    def entity_id(self):
-        """Return the entity ID of the switch."""
-        return self._entity_id
-
-    @property
-    def name(self):
-        """Return the name of the device if any."""
-        return self._name
-
-    @property
-    def is_on(self):
-        """Return true if zeitgeber is on."""
-        return self._state
-
-    async def async_added_to_hass(self):
-        """Call when entity about to be added to hass."""
-        # Add callback
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass, ZEITGEBER_UPDATE_TOPIC, self._update_switch
-            )
-        )
-
-        # Add listeners
-        async_track_state_change_event(
-            self.hass, self._lights, self._light_state_changed
-        )
-        track_kwargs = dict(hass=self.hass, action=self._state_changed)
-        if self._sleep_entity is not None:
-            sleep_kwargs = dict(track_kwargs, entity_ids=self._sleep_entity)
-            async_track_state_change_event(**sleep_kwargs)
-
-        if self._disable_entity is not None:
-            async_track_state_change_event(
-                self.hass, self._disable_entity, self._state_changed
-            )
-
-        if self._state is not None:  # If not None, we got an initial value
-            return
-
-        state = await self.async_get_last_state()
-        self._state = state and state.state == STATE_ON
-
-    @property
-    def icon(self):
-        """Icon to use in the frontend, if any."""
-        return self._icon
-
-    @property
-    def hs_color(self):
-        return self._hs_color
-
-    @property
-    def extra_state_attributes(self):
+    @cached_property
+    def extra_state_attributes(
+        self,
+    ) -> dict[str, Any]:
         """Return the attributes of the switch."""
+        light_state = self.coordinator.data.light_state
+        if not light_state:
+            return {}
         return {
-            "hs_color": self._hs_color,
-            "brightness": self._brightness,
-            "colortemp": self._color_temperature(),
+            "brightness": light_state.brightness,
+            "color_temp_kelvin": light_state.temperature,
+            "rgb_color": light_state.rgb,
+            "xy_color": light_state.xy,
+            "hs_color": light_state.hs,
         }
 
     async def async_turn_on(self, **kwargs):
         """Turn on zeitgeber."""
-        self._state = True
-        await self._force_update_switch()
+        self._attr_is_on = True
+        await self._adjust_lights()
 
     async def async_turn_off(self, **kwargs):
         """Turn off zeitgeber."""
-        self._state = False
-        self._hs_color = None
-        self._brightness = None
+        self._attr_is_on = False
 
-    def _entity_state(self, entity_id):
-        """Return an entity's state, or None if it has not been loaded yet."""
-        state = self.hass.states.get(entity_id)
-        return None if state is None else state.state
+    def _handle_coordinator_update(self) -> None:
+        _LOGGER.debug("received update")
+        self.hass.add_job(self._adjust_lights)
+        return super()._handle_coordinator_update()
 
-    def _is_sleep(self):
-        return (
-            self._sleep_entity is not None
-            and self._entity_state(self._sleep_entity) in self._sleep_state
-        )
-
-    def _color_temperature(self):
-        return (
-            self._zeitgeber._colortemp
-            if not self._is_sleep()
-            else self._sleep_colortemp
-        )
-
-    def _calc_rgb(self):
-        return color_temperature_to_rgb(self._color_temperature())
-
-    def _calc_xy(self):
-        return color_RGB_to_xy(*self._calc_rgb())
-
-    def _calc_hs(self):
-        return color_xy_to_hs(*self._calc_xy())
-
-    def _calc_brightness(self) -> float:
-        return self._zeitgeber._brightness
-
-    async def _update_switch(self, lights=None, transition=None, force=False):
-        if self._only_once and not force:
-            return
-        self._hs_color = self._calc_hs()
-        self._brightness = self._calc_brightness()
-        await self._adjust_lights(lights or self._lights, transition)
-
-    async def _force_update_switch(self, lights=None):
-        return await self._update_switch(
-            lights, transition=self._initial_transition, force=True
-        )
-
-    def _is_disabled(self):
-        return (
-            self._disable_entity is not None
-            and self._entity_state(self._disable_entity) in self._disable_state
-        )
-
-    def _is_waiting_for_entities(self):
-        """Return True while the sleep or disable entity has not loaded yet.
-
-        During startup they may be added after this switch. Lights are not
-        adjusted until they appear, and their first state change triggers an
-        update. Once Home Assistant has started, a missing entity is ignored.
-        """
-        missing = [
-            entity_id
-            for entity_id in (self._sleep_entity, self._disable_entity)
-            if entity_id is not None and self.hass.states.get(entity_id) is None
-        ]
-        if not missing:
-            return False
-        if self.hass.state is not CoreState.running:
-            return True
-        if not self._warned_missing:
-            self._warned_missing = True
-            _LOGGER.warning(
-                "%s: %s not found, continuing without it",
-                self._name,
-                ", ".join(missing),
-            )
-        return False
-
-    def _should_adjust(self):
-        if self._state is not True:
-            return False
-        if self._is_waiting_for_entities():
-            return False
-        if self._is_disabled():
-            return False
-        return True
-
-    async def _adjust_lights(self, lights, transition):
-        if not self._should_adjust():
+    async def _adjust_lights(self, lights=None, transition=None):
+        if not self.is_on:
             return
 
         if transition is None:
-            transition = self._zeitgeber._transition
+            transition = (
+                self.coordinator.update_interval or timedelta(minutes=1)
+            ).seconds
+
+        config_entry = self.coordinator.config_entry
+        assert config_entry is not None
+
+        light_state = self.coordinator.data.light_state
+        if light_state is None:
+            _LOGGER.warning("No light state")
+            return
+
+        lights = lights or config_entry.options[Conf.MANAGED_ENTITIES]
 
         tasks = []
         for light in lights:
+            entity = self.hass.states.get(light)
+            if entity is None:
+                _LOGGER.warning(f"Entity {light} does not exist")
+                continue
             if not is_on(self.hass, light):
                 continue
 
             service_data = {ATTR_ENTITY_ID: light, ATTR_TRANSITION: transition}
-            if self._brightness is not None:
-                service_data[ATTR_BRIGHTNESS] = int((self._brightness / 100) * 254)
+            service_data[ATTR_BRIGHTNESS] = round((light_state.brightness / 100) * 255)
 
-            light_type = self._lights_types[light]
-            if light_type == "ct":
-                service_data[ATTR_COLOR_TEMP_KELVIN] = int(self._color_temperature())
-            elif light_type == "rgb":
-                r, g, b = self._calc_rgb()
-                service_data[ATTR_RGB_COLOR] = (int(r), int(g), int(b))
-            elif light_type == "xy":
-                service_data[ATTR_XY_COLOR] = self._calc_xy()
+            preference = ("color_temp", "rgb", "xy", "hs")
+            match next(
+                (
+                    mode
+                    for mode in preference
+                    if mode in entity.attributes["supported_color_modes"]
+                ),
+                None,
+            ):
+                case "color_temp":
+                    service_data[ATTR_COLOR_TEMP_KELVIN] = light_state.temperature
+                case "rgb":
+                    service_data[ATTR_RGB_COLOR] = light_state.rgb
+                case "xy":
+                    service_data[ATTR_XY_COLOR] = light_state.xy
+                case "hs":
+                    service_data[ATTR_HS_COLOR] = light_state.hs
+                case None:
+                    _LOGGER.info(
+                        f"{light} does not have any supported color mode, only setting "
+                        "brightness."
+                    )
 
             _LOGGER.debug(
                 "Scheduling 'light.turn_on' with the following 'service_data': %s",
@@ -418,12 +226,11 @@ class ZeitgeberSwitch(SwitchEntity, RestoreEntity):
 
         if old_state is None or old_state.state != "on":
             _LOGGER.debug(_difference_between_states(old_state, new_state))
-            await self._force_update_switch(lights=[entity_id])
+            await self._adjust_lights(lights=[entity_id])
 
     async def _state_changed(self, event: Event[EventStateChangedData]):
-        entity_id = event.data["entity_id"]
         old_state = event.data["old_state"]
         new_state = event.data["new_state"]
 
         _LOGGER.debug(_difference_between_states(old_state, new_state))
-        await self._force_update_switch()
+        await self._adjust_lights()

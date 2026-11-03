@@ -2,103 +2,63 @@
 Zeitgeber Sensor for Home-Assistant.
 """
 
-from typing import TYPE_CHECKING, Optional, cast
+from functools import cached_property
+from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import Entity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType
+from homeassistant.helpers.typing import StateType
+from homeassistant.components.sensor import SensorEntity
+from .entity import ZeitgeberEntity
 
-from . import ZEITGEBER_UPDATE_TOPIC, DOMAIN
-
-if TYPE_CHECKING:
-    from . import Zeitgeber
+from . import ZeitgeberCoordinator
 
 ICON = "mdi:theme-light-dark"
 
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
+    entry: ConfigEntry[ZeitgeberCoordinator],
     async_add_entities: AddEntitiesCallback,
-    discovery_info=None,
 ) -> None:
     """Set up the Zeitgeber sensor."""
-    zeitgeber = cast(Optional[Zeitgeber], hass.data.get(DOMAIN))
-    if zeitgeber is not None:
-        sensor = ZeitgeberSensor(hass, zeitgeber)
-        async_add_entities([sensor])
-
-        async def async_update(call=None) -> None:
-            """Update component."""
-            await zeitgeber.async_loop()
-
-        service_name = "values_update"
-        hass.services.async_register(DOMAIN, service_name, async_update)
+    sensor = ZeitgeberSensor(entry.runtime_data)
+    async_add_entities([sensor])
 
 
-class ZeitgeberSensor(Entity):
+class ZeitgeberSensor(SensorEntity, ZeitgeberEntity):
     """Representation of a Zeitgeber sensor."""
 
-    def __init__(self, hass, zeitgeber):
+    def __init__(self, coordinator: ZeitgeberCoordinator) -> None:
         """Initialize the Zeitgeber sensor."""
-        self._zeitgeber: Zeitgeber = zeitgeber
-        self._name = "Zeitgeber Values"
-        self._entity_id = "sensor.zeitgeber_values"
-        self._unit_of_measurement = "%"
-        self._icon = ICON
+        super().__init__(coordinator)
+        self._attr_native_unit_of_measurement = "%"
+        self._attr_icon = ICON
+        self._attr_name = "sensor"
+        assert coordinator.config_entry is not None
+        self._attr_unique_id = f"{coordinator.config_entry.data["uuid"][-4:]}_sensor"
 
     @property
-    def entity_id(self):
-        """Return the entity ID of the sensor."""
-        return self._entity_id
-
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    @property
-    def state(self):
+    def native_value(self) -> StateType:
         """Return the state of the sensor."""
-        return self._zeitgeber._brightness
+        if self.coordinator.data.light_state is None:
+            return None
+        return self.coordinator.data.light_state.brightness
 
     @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement."""
-        return self._unit_of_measurement
-
-    @property
-    def icon(self):
-        """Icon to use in the frontend, if any."""
-        return self._icon
-
-    @property
-    def hs_color(self):
-        return self._zeitgeber._hs_color
-
-    @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return the attributes of the sensor."""
+        light_state = self.coordinator.data.light_state
+        if not light_state:
+            return {}
         return {
-            "colortemp": self._zeitgeber._colortemp,
-            "rgb_color": self._zeitgeber._rgb_color,
-            "xy_color": self._zeitgeber._xy_color,
+            "brightness": light_state.brightness,
+            "color_temp_kelvin": light_state.temperature,
+            "rgb_color": light_state.rgb,
+            "xy_color": light_state.xy,
+            "hs_color": light_state.hs,
         }
-
-    @property
-    def should_poll(self) -> bool:
-        """Disable polling."""
-        return False
-
-    async def async_added_to_hass(self) -> None:
-        """Connect dispatcher to signal from Zeitgeber object."""
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass, ZEITGEBER_UPDATE_TOPIC, self._update_callback
-            )
-        )
 
     @callback
     def _update_callback(self) -> None:

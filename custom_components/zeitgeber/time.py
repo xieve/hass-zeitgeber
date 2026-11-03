@@ -1,38 +1,48 @@
 from datetime import time
+import logging
 from typing import TYPE_CHECKING, Optional, cast
 import typing
 
 from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.components.time import TimeEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import ZEITGEBER_UPDATE_TOPIC, DOMAIN
+from custom_components.zeitgeber.switch import RestoreEntity
 
-if TYPE_CHECKING:
-    from . import Zeitgeber, SunEventsKey
+from .entity import ZeitgeberEntity
+from . import SunEventsKey, ZeitgeberCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
-def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
+    entry: ConfigEntry[ZeitgeberCoordinator],
     async_add_entities: AddEntitiesCallback,
-):
-    zeitgeber = cast(Optional[Zeitgeber], hass.data.get(DOMAIN))
-    if zeitgeber is not None:
-        async_add_entities(
-            ZeitgeberTime(zeitgeber, key)
-            for key in typing.get_args(SunEventsKey)
-        )
+) -> None:
+    async_add_entities(
+        ZeitgeberTime(entry.runtime_data, key)
+        for key in typing.get_args(SunEventsKey.__value__)
+    )
 
 
-class ZeitgeberTime(TimeEntity):
-    def __init__(
-        self, zeitgeber: Zeitgeber, event: SunEventsKey
-    ) -> None:
-        super().__init__()
-        self._zeitgeber: Zeitgeber = zeitgeber
+class ZeitgeberTime(TimeEntity, RestoreEntity, ZeitgeberEntity):
+    def __init__(self, coordinator: ZeitgeberCoordinator, event: SunEventsKey) -> None:
+        super().__init__(coordinator)
         self._event: SunEventsKey = event
+        self._attr_name = event
+        assert coordinator.config_entry is not None
+        self._attr_unique_id = (
+            f"{coordinator.config_entry.data["uuid"][-4:]}_{event}_time"
+        )
+        _LOGGER.debug(self._attr_unique_id)
 
     async def async_set_value(self, value: time) -> None:
-        self._zeitgeber._manual_config_times[self._event] = value
+        self._attr_native_value = value
+        _LOGGER.debug(value)
+        _LOGGER.debug(self.native_value)
+        _LOGGER.debug(self.state)
+        self.coordinator.data.manual_config_times[self._event] = value
+        await self.coordinator.async_refresh()

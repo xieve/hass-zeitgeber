@@ -29,16 +29,20 @@ Technical notes: I had to make a lot of assumptions when writing this app
 
 import bisect
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from enum import StrEnum, auto
+import logging
 from math import asin, cos, pi, radians, sin
 from typing import (
     TYPE_CHECKING,
+    Any,
     Generator,
     Iterable,
     Literal,
     Mapping,
+    Optional,
     ReadOnly,
     Sequence,
     TypedDict,
@@ -46,12 +50,9 @@ from typing import (
     final,
 )
 
-from astral import Observer, sun
-import homeassistant.helpers.config_validation as cv
-import homeassistant.util.dt as dt_util
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType
-import voluptuous as vol
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.components.light import ATTR_TRANSITION, VALID_TRANSITION
 from homeassistant.const import (
     CONF_ELEVATION,
@@ -59,17 +60,16 @@ from homeassistant.const import (
     CONF_LONGITUDE,
     SUN_EVENT_SUNRISE,
     SUN_EVENT_SUNSET,
+    Platform,
 )
 from homeassistant.const import __version__ as HA_VERSION
-from homeassistant.helpers.discovery import async_load_platform
-from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
+    async_track_point_in_time,
     async_track_sunrise,
     async_track_sunset,
     async_track_time_change,
     async_track_time_interval,
 )
-from homeassistant.helpers.sun import get_astral_location
 from homeassistant.util.color import (
     color_RGB_to_xy,
     color_temperature_to_rgb,
@@ -77,8 +77,7 @@ from homeassistant.util.color import (
 )
 from packaging import version
 
-DOMAIN = "zeitgeber"
-ZEITGEBER_UPDATE_TOPIC = f"{DOMAIN}_update"
+from .const import DOMAIN, Conf
 
 CONF_MIN_CT, DEFAULT_MIN_CT = "min_colortemp", 2500
 CONF_MAX_CT, DEFAULT_MAX_CT = "max_colortemp", 5500
@@ -92,39 +91,7 @@ CONF_SUNRISE_TIME = "sunrise_time"
 CONF_SUNSET_TIME = "sunset_time"
 CONF_DUSK_TIME = "dusk_time"
 DEFAULT_TRANSITION = 60
-
-CONFIG_SCHEMA = vol.Schema(
-    {
-        DOMAIN: vol.Schema(
-            {
-                vol.Optional(CONF_MIN_CT, default=DEFAULT_MIN_CT): vol.All(
-                    vol.Coerce(int), vol.Range(min=1000, max=10000)
-                ),
-                vol.Optional(CONF_MAX_CT, default=DEFAULT_MAX_CT): vol.All(
-                    vol.Coerce(int), vol.Range(min=1000, max=10000)
-                ),
-                vol.Optional(CONF_MIN_BRIGHT, default=DEFAULT_MIN_BRIGHT): vol.All(
-                    vol.Coerce(int), vol.Range(min=0, max=100)
-                ),
-                vol.Optional(CONF_MAX_BRIGHT, default=DEFAULT_MAX_BRIGHT): vol.All(
-                    vol.Coerce(int), vol.Range(min=1, max=100)
-                ),
-                vol.Optional(CONF_SUNRISE_OFFSET): cv.time_period_str,
-                vol.Optional(CONF_SUNSET_OFFSET): cv.time_period_str,
-                vol.Optional(CONF_SUNRISE_TIME): cv.time,
-                vol.Optional(CONF_SUNSET_TIME): cv.time,
-                vol.Optional(CONF_LATITUDE): cv.latitude,
-                vol.Optional(CONF_LONGITUDE): cv.longitude,
-                vol.Optional(CONF_ELEVATION): float,
-                vol.Optional(CONF_INTERVAL, default=DEFAULT_INTERVAL): cv.time_period,
-                vol.Optional(
-                    ATTR_TRANSITION, default=DEFAULT_TRANSITION
-                ): VALID_TRANSITION,
-            }
-        ),
-    },
-    extra=vol.ALLOW_EXTRA,
-)
+_PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.SWITCH, Platform.TIME]
 
 REQUIRED_HA_VERSION = "2024.1.0"
 
@@ -143,6 +110,7 @@ type SunEventsKey = Literal[
 ]
 type SunEvents = dict[SunEventsKey, datetime]
 type ManualConfigTimes = dict[SunEventsKey, time]
+type ZeitgeberConfigEntry = ConfigEntry[ZeitgeberCoordinator]
 
 
 @dataclass
@@ -150,120 +118,91 @@ class LightState:
     brightness: float
     temperature: int
 
+    @property
+    def rgb(self) -> tuple[int, int, int]:
+        return cast(
+            tuple[int, int, int],
+            tuple(round(x) for x in color_temperature_to_rgb(self.temperature)),
+        )
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    @property
+    def xy(self) -> tuple[float, float]:
+        return color_RGB_to_xy(*self.rgb)
+
+    @property
+    def hs(self) -> tuple[float, float]:
+        return color_xy_to_hs(*self.xy)
+
+
+@dataclass
+class ZeitgeberData:
+    light_state: Optional[LightState]
+    manual_config_times: ManualConfigTimes
+    # sun_events: SunEvents
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ZeitgeberConfigEntry) -> None:
     """Set up the zeitgeber platform."""
-    conf = config[DOMAIN]
-    hass.data[DOMAIN] = Zeitgeber(
+    coordinator = ZeitgeberCoordinator(
         hass,
-        min_colortemp=conf.get(CONF_MIN_CT),
-        max_colortemp=conf.get(CONF_MAX_CT),
-        min_brightness=config.get(CONF_MIN_BRIGHT),
-        max_brightness=config.get(CONF_MAX_BRIGHT),
-        sunrise_offset=conf.get(CONF_SUNRISE_OFFSET),
-        sunset_offset=conf.get(CONF_SUNSET_OFFSET),
-        dawn_time=conf.get(CONF_DAWN_TIME),
-        sunrise_time=conf.get(CONF_SUNRISE_TIME),
-        sunset_time=conf.get(CONF_SUNSET_TIME),
-        dusk_time=conf.get(CONF_DUSK_TIME),
-        latitude=conf.get(CONF_LATITUDE, hass.config.latitude),
-        longitude=conf.get(CONF_LONGITUDE, hass.config.longitude),
-        elevation=conf.get(CONF_ELEVATION, hass.config.elevation),
-        transition=conf.get(ATTR_TRANSITION),
+        entry,
     )
-    await hass.data[DOMAIN]._async_init(interval=conf.get(CONF_INTERVAL))
-    hass.async_create_task(async_load_platform(hass, "sensor", DOMAIN, {}, config))
+    await coordinator.async_config_entry_first_refresh()
+    entry.runtime_data = coordinator
 
-    return True
+    await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
 
 
-def ease_sine(x: float):
+def ease_sine(x: float) -> float:
     return -(cos(pi * x) - 1) / 2
 
 
-def interpolate(a: float, b: float, x: float):
+def interpolate(a: float, b: float, x: float) -> float:
     """
     Interpolate linearly between `a` and `b` where `a <= b` and `0 <= x <= 1`
     """
     return a + (b - a) * x
 
 
-class Zeitgeber:
+class ZeitgeberCoordinator(DataUpdateCoordinator[ZeitgeberData]):
     """Calculate universal zeitgeber values."""
 
     brightness: float
     """Brightness in percent"""
 
+    @callback
     def __init__(
         self,
-        hass,
-        min_colortemp,
-        max_colortemp,
-        min_brightness,
-        max_brightness,
-        sunrise_offset,
-        sunset_offset,
-        dawn_time,
-        sunrise_time,
-        sunset_time,
-        dusk_time,
-        latitude,
-        longitude,
-        elevation,
-        transition,
+        hass: HomeAssistant,
+        config_entry: ZeitgeberConfigEntry,
     ):
-        self.hass: HomeAssistant = hass
-        self._min_colortemp = min_colortemp
-        self._max_colortemp = max_colortemp
-        self._min_brightness = min_brightness
-        self._max_brightness = max_brightness
-        self._sunrise_offset = sunrise_offset
-        self._sunset_offset = sunset_offset
-        # FIXME: this needs to be initialized from the saved config values
-        self._manual_config_times: ManualConfigTimes = {}
-        self._latitude = latitude
-        self._longitude = longitude
-        self._elevation = elevation
-        self._transition = transition
+        super().__init__(
+            hass,
+            logging.getLogger(__name__),
+            config_entry=config_entry,
+            name=DOMAIN,
+            # always_update=False,
+            # update_interval=timedelta(minutes=1),
+        )
+        self._poll = False
+        self._wake_next: Optional[datetime] = None
 
-    async def _async_init(self, interval):
-        if self._manual_config_times["sunrise"] is not None:
-            async_track_time_change(
-                self.hass,
-                self.async_loop,
-                hour=self._manual_config_times["sunrise"].hour,
-                minute=self._manual_config_times["sunrise"].minute,
-                second=self._manual_config_times["sunrise"].second,
-            )
-        else:
-            async_track_sunrise(self.hass, self.async_loop, self._sunrise_offset)
-
-        if self._manual_config_times["sunset"] is not None:
-            async_track_time_change(
-                self.hass,
-                self.async_loop,
-                hour=self._manual_config_times["sunset"].hour,
-                minute=self._manual_config_times["sunset"].minute,
-                second=self._manual_config_times["sunset"].second,
-            )
-        else:
-            async_track_sunset(self.hass, self.async_loop, self._sunset_offset)
-
-        async_track_time_interval(self.hass, self.async_loop, interval)
-
+    @callback
     def _get_sun_events(self, day: date) -> SunEvents:
-        if self._manual_config_times["sunrise"] is not None and self._manual_config_times["sunset"] is not None:
-            dawn = datetime.combine(day, self._manual_config_times["dawn"])
-            sunrise = datetime.combine(day, self._manual_config_times["sunrise"])
-            sunset = datetime.combine(day, self._manual_config_times["sunset"])
-            dusk = datetime.combine(day, self._manual_config_times["dusk"])
-        else:
-            observer = Observer(self._latitude, self._longitude, self._elevation)
-            dawn = sun.dawn(observer)
-            sunrise = sun.sunrise(observer)
-            sunset = sun.sunset(observer)
-            dusk = sun.dusk(observer)
+        try:
+            dawn = datetime.combine(day, self.data.manual_config_times["dawn"])
+            sunrise = datetime.combine(day, self.data.manual_config_times["sunrise"])
+            sunset = datetime.combine(day, self.data.manual_config_times["sunset"])
+            dusk = datetime.combine(day, self.data.manual_config_times["dusk"])
+        except KeyError:
+            return {}
+        # observer = Observer(self._latitude, self._longitude, self._elevation)
+        # dawn = sun.dawn(observer)
+        # sunrise = sun.sunrise(observer)
+        # sunset = sun.sunset(observer)
+        # dusk = sun.dusk(observer)
 
+        # TODO: make this more flexible, allow customization of golden hour etc
         events: SunEvents = {
             "dawn": dawn,
             "sunrise": sunrise,
@@ -274,13 +213,9 @@ class Zeitgeber:
             "dusk": dusk,
         }
 
-        if self._sunrise_offset is not None:
-            events["sunrise"] += self._sunrise_offset
-        if self._sunset_offset is not None:
-            events["sunset"] += self._sunset_offset
-
         return events
 
+    @callback
     def _relevant_events(self, now: datetime) -> list[tuple[SunEventsKey, datetime]]:
         """
         Returns the previous and next solar event
@@ -290,31 +225,40 @@ class Zeitgeber:
             for days in [-1, 0, 1]
             for pair in tuple(self._get_sun_events(now + timedelta(days=days)).items())
         ]
-        # events is already sorted, since dicts are always ordered since Python 3.7 and
-        # we insert in the correct order.
-        # This is assuming that dawn, sunrise, noon, sunset, dusk occur in that order
-        # on any given day.
+        events.sort(key=lambda pair: pair[1])
         index_now = bisect.bisect(events, now, key=lambda pair: pair[1])
         return events[index_now - 1 : index_now + 1]
 
-    def update(self, now: datetime):
+    @callback
+    def _update(self, now: datetime) -> ZeitgeberData:
+        """Update zeitgeber data. Warning: this updates `self.data` statefully."""
+        self.logger.debug(self.config_entry.options)
+
         def target_state(event: SunEventsKey):
+            assert self.config_entry is not None
+            o = self.config_entry.options
             match event:
                 case "dawn":
-                    return LightState(self._min_brightness, self._min_colortemp)
+                    return LightState(o[Conf.MIN_BRIGHTNESS], o[Conf.MIN_COLOR_TEMP])
                 case "sunrise":
-                    return LightState(self._max_brightness, self._min_colortemp)
+                    return LightState(o[Conf.MAX_BRIGHTNESS], o[Conf.MIN_COLOR_TEMP])
                 case "golden_hour_am":
-                    return LightState(self._max_brightness, self._max_colortemp)
+                    return LightState(o[Conf.MAX_BRIGHTNESS], o[Conf.MAX_COLOR_TEMP])
                 case "golden_hour_pm":
-                    return LightState(self._max_brightness, self._max_colortemp)
+                    return LightState(o[Conf.MAX_BRIGHTNESS], o[Conf.MAX_COLOR_TEMP])
                 case "sunset":
-                    return LightState(self._max_brightness, self._min_colortemp)
+                    return LightState(o[Conf.MAX_BRIGHTNESS], o[Conf.MIN_COLOR_TEMP])
                 case "dusk":
-                    return LightState(self._min_brightness, self._min_colortemp)
+                    return LightState(o[Conf.MIN_BRIGHTNESS], o[Conf.MIN_COLOR_TEMP])
+
+        if self.data is None:
+            self.data = ZeitgeberData(None, {})
 
         events: list[tuple[SunEventsKey, datetime]] = self._relevant_events(now)
-        print(events, now)
+
+        # If uninitialized
+        if len(events) < 2:
+            return self.data
 
         [(prev_event, prev_dt), (next_event, next_dt)] = events
 
@@ -322,31 +266,40 @@ class Zeitgeber:
         next_target = target_state(next_event)
 
         if prev_target == next_target:
-            self._brightness = prev_target.brightness
-            self._colortemp = prev_target.temperature
+            self.data.light_state = LightState(
+                prev_target.brightness, prev_target.temperature
+            )
+            self._wake_next = next_dt
         else:
             eased_progress = ease_sine((now - prev_dt) / (next_dt - prev_dt))
-            if prev_target.brightness != next_target.brightness:
-                self._brightness = interpolate(
+            self.data.light_state = LightState(
+                interpolate(
                     prev_target.brightness, next_target.brightness, eased_progress
-                )
-            if prev_target.temperature != next_target.temperature:
-                self._colortemp = interpolate(
-                    prev_target.temperature, next_target.temperature, eased_progress
-                )
+                ),
+                round(
+                    interpolate(
+                        prev_target.temperature, next_target.temperature, eased_progress
+                    )
+                ),
+            )
+            self._wake_next = None
 
-        self._rgb_color = cast(
-            tuple[int, int, int],
-            tuple(int(x) for x in color_temperature_to_rgb(self._colortemp)),
-        )
-        self._xy_color = color_RGB_to_xy(*self._rgb_color)
-        self._hs_color = color_xy_to_hs(*self._xy_color)
+        return self.data
 
-    async def async_loop(self, *_):
-        """Update zeitgeber values."""
-        now = datetime.now()
-        self.update(now)
-        async_dispatcher_send(self.hass, ZEITGEBER_UPDATE_TOPIC)
+    @callback
+    async def _async_update_data(self) -> ZeitgeberData:
+        """Update zeitgeber data and schedule next update"""
+        data = self._update(datetime.now())
+
+        async def refresh(*_):
+            await self.async_refresh()
+
+        if self._wake_next is None:
+            self.update_interval = timedelta(minutes=1)
+        else:
+            async_track_point_in_time(self.hass, refresh, self._wake_next)
+
+        return data
 
 
 if __name__ == "__main__":
@@ -360,30 +313,24 @@ if __name__ == "__main__":
     sub1 = plt.subplot(2, 1, 1)
     sub2 = plt.subplot(2, 1, 2)
 
-    zeitgeber = Zeitgeber(
+    zeitgeber = ZeitgeberCoordinator(
         None,
-        2700,
-        5000,
-        0,
-        100,
-        None,
-        None,
-        time(6),
-        time(7),
-        time(20),
-        time(21, 30),
-        0,
-        0,
-        0,
-        0,
+        {},
     )
 
     percent = []
     rgb = []
     for now in (minute * 60 + 30 for minute in range(24 * 60)):
-        zeitgeber.update(datetime.fromtimestamp(now))
-        percent.append(zeitgeber._brightness)
-        rgb.append([int(x) for x in zeitgeber._rgb_color])
+        zeitgeber._update(datetime.fromtimestamp(now))
+        percent.append(zeitgeber.data.light_state.brightness)
+        rgb.append(
+            [
+                int(x)
+                for x in color_temperature_to_rgb(
+                    zeitgeber.data.light_state.temperature
+                )
+            ]
+        )
 
     sub1.plot(percent)
     sub2.imshow([rgb], aspect="auto")

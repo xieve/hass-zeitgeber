@@ -1,5 +1,9 @@
-- [ ] move runtime data from data to runtime_data
+- [x] move runtime data from data to runtime_data
 - [ ] config flow
 - [ ] i can actually fix the original turn-off problem (iirc) with context ids
-- [ ] Circadian Lighting -> Zeitgeber
-- [ ] URLs
+- [x] Circadian Lighting -> Zeitgeber
+- [x] URLs
+- [ ] Auto-on, auto-off
+- [ ] config for transition time and poll rate? sort of discouraged by docs, idk
+
+might be helpful: homeassistant.helpers.event.async_track_point_in_time
