@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING, Any
-
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 

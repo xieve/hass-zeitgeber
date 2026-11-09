@@ -2,7 +2,6 @@
 Zeitgeber Sensor for Home-Assistant.
 """
 
-from functools import cached_property
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback

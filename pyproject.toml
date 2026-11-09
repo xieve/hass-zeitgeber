@@ -8,6 +8,6 @@ line-length = 90
 
 [dependency-groups]
 dev = [
-    "homeassistant>=2021.12.10",
+    "homeassistant>=2026.05.04",
     "matplotlib>=3.7.5",
 ]

@@ -1,4 +1,3 @@
-from enum import StrEnum, auto
 import logging
 from typing import Any
 from uuid import uuid4
@@ -12,13 +11,13 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.helpers.selector import NumberSelector, selector
-from probatio import Required, Schema
+from voluptuous import Required, Schema
 
 from .const import Conf, DOMAIN
 
 OPTIONS_SCHEMA = Schema(
     {
-        Required(Conf.MANAGED_ENTITIES): selector(
+        Required(str(Conf.MANAGED_ENTITIES)): selector(
             {
                 "entity": {
                     "filter": {"domain": "light"},
@@ -26,17 +25,19 @@ OPTIONS_SCHEMA = Schema(
                 }
             }
         ),
-        Required(Conf.DURATION, default={"minutes": 1}): selector({"duration": {}}),
-        Required(Conf.MIN_COLOR_TEMP, default=2200): NumberSelector(
+        Required(str(Conf.DURATION), default={"minutes": 1}): selector(
+            {"duration": {}}
+        ),
+        Required(str(Conf.MIN_COLOR_TEMP), default=2200): NumberSelector(
             {"min": 1000, "max": 10000}
         ),
-        Required(Conf.MAX_COLOR_TEMP, default=2200): NumberSelector(
+        Required(str(Conf.MAX_COLOR_TEMP), default=2200): NumberSelector(
             {"min": 1000, "max": 10000}
         ),
-        Required(Conf.MIN_BRIGHTNESS, default=1): NumberSelector(
+        Required(str(Conf.MIN_BRIGHTNESS), default=1): NumberSelector(
             {"min": 1, "max": 100}
         ),
-        Required(Conf.MAX_BRIGHTNESS, default=100): NumberSelector(
+        Required(str(Conf.MAX_BRIGHTNESS), default=100): NumberSelector(
             {"min": 1, "max": 100}
         ),
     }

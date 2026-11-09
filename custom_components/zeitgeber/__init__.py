@@ -43,14 +43,24 @@ from homeassistant.core import (
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.components.light import is_on
-from homeassistant.components.light.const import (
-    ATTR_BRIGHTNESS,
-    ATTR_COLOR_TEMP_KELVIN,
-    ATTR_RGB_COLOR,
-    ATTR_TRANSITION,
-    ATTR_XY_COLOR,
-    ATTR_HS_COLOR,
-)
+try:
+    from homeassistant.components.light.const import (
+        ATTR_BRIGHTNESS,
+        ATTR_COLOR_TEMP_KELVIN,
+        ATTR_RGB_COLOR,
+        ATTR_TRANSITION,
+        ATTR_XY_COLOR,
+        ATTR_HS_COLOR,
+    )
+except ImportError:
+    from homeassistant.components.light import (
+        ATTR_BRIGHTNESS,
+        ATTR_COLOR_TEMP_KELVIN,
+        ATTR_RGB_COLOR,
+        ATTR_TRANSITION,
+        ATTR_XY_COLOR,
+        ATTR_HS_COLOR,
+    )
 from homeassistant.components.light.const import DOMAIN as LIGHT_DOMAIN
 from homeassistant.const import (
     ATTR_ENTITY_ID,

@@ -14,17 +14,15 @@
       project = pyproject-nix.lib.project.loadPyproject {
         projectRoot = ./.;
       };
-
-      pythonAttr = "python3";
     in
     {
       devShells = forAllSystems (system: {
         default =
           let
             pkgs = nixpkgs.legacyPackages.${system};
-            python = pkgs.${pythonAttr}.override {
+            python = pkgs.home-assistant.python3Packages.python.override {
               packageOverrides = self: super: {
-                homeassistant = super.toPythonModule pkgs.home-assistant;
+                inherit (pkgs.home-assistant.python3Packages) homeassistant;
               };
             };
             pythonEnv = python.withPackages (
@@ -41,19 +39,15 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          python = pkgs.${pythonAttr};
           domain = "zeitgeber";
         in
         {
-          default = pkgs.buildHomeAssistantComponent (
-            project.renderers.buildPythonPackage { inherit python; }
-            // {
-              inherit domain;
-              version = (lib.importJSON "${./.}/custom_components/${domain}/manifest.json").version;
-              owner = "claytonjn";
-              pyproject = true;
-            }
-          );
+          default = pkgs.buildHomeAssistantComponent {
+            inherit domain;
+            version = (lib.importJSON "${./.}/custom_components/${domain}/manifest.json").version;
+            owner = "claytonjn";
+            src = ./.;
+          };
         }
       );
     };
