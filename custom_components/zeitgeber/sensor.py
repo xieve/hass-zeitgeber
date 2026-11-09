@@ -36,13 +36,12 @@ class ZeitgeberSensor(SensorEntity, ZeitgeberEntity):
         self._attr_native_unit_of_measurement = "%"
         self._attr_icon = ICON
         self._attr_name = "sensor"
-        assert coordinator.config_entry is not None
         self._attr_unique_id = f"{coordinator.config_entry.data["uuid"][-4:]}_sensor"
 
     @property
     def native_value(self) -> StateType:
         """Return the state of the sensor."""
-        if self.coordinator.data.light_state is None:
+        if self.coordinator.data.light_state is None or not self.coordinator.enabled:
             return None
         return self.coordinator.data.light_state.brightness
 

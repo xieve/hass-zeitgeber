@@ -1,18 +1,18 @@
 from datetime import time
 import logging
-from typing import TYPE_CHECKING, Optional, cast
 import typing
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.typing import ConfigType
 from homeassistant.components.time import TimeEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.const import STATE_UNKNOWN
 
+from .calculate import SunEventsKey
 from custom_components.zeitgeber.switch import RestoreEntity
 
 from .entity import ZeitgeberEntity
-from . import SunEventsKey, ZeitgeberCoordinator
+from . import ZeitgeberCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,16 +33,17 @@ class ZeitgeberTime(TimeEntity, RestoreEntity, ZeitgeberEntity):
         super().__init__(coordinator)
         self._event: SunEventsKey = event
         self._attr_name = event
-        assert coordinator.config_entry is not None
         self._attr_unique_id = (
             f"{coordinator.config_entry.data["uuid"][-4:]}_{event}_time"
         )
-        _LOGGER.debug(self._attr_unique_id)
 
     async def async_set_value(self, value: time) -> None:
         self._attr_native_value = value
-        _LOGGER.debug(value)
-        _LOGGER.debug(self.native_value)
-        _LOGGER.debug(self.state)
         self.coordinator.data.manual_config_times[self._event] = value
         await self.coordinator.async_refresh()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state != STATE_UNKNOWN:
+            await self.async_set_value(time.fromisoformat(last_state.state))

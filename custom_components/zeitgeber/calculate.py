@@ -16,7 +16,7 @@ from homeassistant.util.color import (
 )
 from homeassistant.core import callback
 
-from const import Conf
+from .const import Conf
 
 type SunEventsKey = Literal[
     "dawn",
@@ -75,7 +75,7 @@ def interpolate(a: float, b: float, x: float) -> float:
 def calculate_state(
     now: datetime, options: Mapping[str, Any], manual_config_times: ManualConfigTimes
 ) -> tuple[Optional[datetime], Optional[LightState]]:
-    """Update zeitgeber data. Warning: this updates `self.data` statefully."""
+    """Calculate new zeitgeber state"""
 
     def target_state(event: SunEventsKey):
         o = options

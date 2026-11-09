@@ -27,22 +27,47 @@ Technical notes: I had to make a lot of assumptions when writing this app
         lights to 2700K (warm white) until your hub goes into Night mode
 """
 
+import asyncio
 from datetime import datetime, timedelta
 import logging
+from typing import Iterable, Optional
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Context,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.components.light import is_on
+from homeassistant.components.light.const import (
+    ATTR_BRIGHTNESS,
+    ATTR_COLOR_TEMP_KELVIN,
+    ATTR_RGB_COLOR,
+    ATTR_TRANSITION,
+    ATTR_XY_COLOR,
+    ATTR_HS_COLOR,
+)
+from homeassistant.components.light.const import DOMAIN as LIGHT_DOMAIN
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    SERVICE_TURN_ON,
+    STATE_ON,
+)
 from homeassistant.const import Platform
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.helpers.event import (
     async_track_point_in_time,
+    async_track_state_change_event,
 )
 from packaging import version
 
 from .calculate import ZeitgeberData, calculate_state
 
-from .const import DOMAIN
+from .const import DOMAIN, Conf
 
 CONF_MIN_CT, DEFAULT_MIN_CT = "min_colortemp", 2500
 CONF_MAX_CT, DEFAULT_MAX_CT = "max_colortemp", 5500
@@ -69,7 +94,7 @@ type ZeitgeberConfigEntry = ConfigEntry[ZeitgeberCoordinator]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ZeitgeberConfigEntry) -> None:
-    """Set up the zeitgeber platform."""
+    """Set up zeitgeber from a config entry"""
     coordinator = ZeitgeberCoordinator(
         hass,
         entry,
@@ -80,11 +105,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ZeitgeberConfigEntry) ->
     await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
 
 
+async def async_update_options(
+    hass: HomeAssistant, entry: ZeitgeberConfigEntry
+) -> None:
+    """Apply new options"""
+    entry.runtime_data._listen()
+    await entry.runtime_data.async_refresh()
+
+
+# TODO: remove refresh interval, i receive a state change thing whenever the lights are done updating afaict. also make sure the lights are only updated when they should be
+
+
 class ZeitgeberCoordinator(DataUpdateCoordinator[ZeitgeberData]):
     """Calculate universal zeitgeber values."""
 
     brightness: float
     """Brightness in percent"""
+    config_entry: ZeitgeberConfigEntry
 
     @callback
     def __init__(
@@ -100,12 +137,50 @@ class ZeitgeberCoordinator(DataUpdateCoordinator[ZeitgeberData]):
             # always_update=False,
         )
         self.data = ZeitgeberData(None, {})
+        self._enabled = False
+        self._listeners_stop: list[CALLBACK_TYPE] = []
+        self._listen()
+        self.config_entry.async_on_unload(self._stop_listeners)
+        self._context = Context()
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self._stop_listeners()
+        if enabled:
+            self._listen()
+        else:
+            self.update_interval = None
+        self.hass.add_job(self.async_refresh)
 
     @callback
+    def _listen(self) -> None:
+        """Register listener for state changes"""
+        self._listeners_stop.append(
+            async_track_state_change_event(
+                self.hass,
+                self.config_entry.options[Conf.MANAGED_ENTITIES],
+                self._state_changed,
+            )
+        )
+
+    @callback
+    def _stop_listeners(self) -> None:
+        """Stop all listeners. Deactivates entire integration."""
+        for stop in self._listeners_stop:
+            stop()
+        self._listeners_stop = []
+
     async def _async_update_data(self) -> ZeitgeberData:
         """Update zeitgeber data and schedule next update"""
-        assert self.config_entry is not None
-        (wake_next, self.data.light_state) = calculate_state(
+        if not self.enabled:
+            return self.data
+
+        wake_next, self.data.light_state = calculate_state(
             datetime.now(), self.config_entry.options, self.data.manual_config_times
         )
 
@@ -113,8 +188,93 @@ class ZeitgeberCoordinator(DataUpdateCoordinator[ZeitgeberData]):
             await self.async_refresh()
 
         if wake_next is None:
+            # Update every minute
             self.update_interval = timedelta(minutes=1)
         else:
-            async_track_point_in_time(self.hass, refresh, wake_next)
+            # Stop polling
+            self.update_interval = None
+            # Wait until the next event
+            self._listeners_stop.append(
+                async_track_point_in_time(self.hass, refresh, wake_next)
+            )
+        self.hass.add_job(self.adjust_lights)
 
         return self.data
+
+    async def _state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Called when any configured light entity changes state"""
+        if (
+            event.context != self._context
+            and (new_state := event.data["new_state"]) is not None
+            and new_state.state == STATE_ON
+        ):
+            await self.adjust_lights((new_state.entity_id,), 0)
+
+    async def adjust_lights(
+        self, lights: Optional[Iterable[str]] = None, transition=None
+    ):
+        """Apply current calculated state to light entities if they are on"""
+        if transition is None:
+            transition = (self.update_interval or timedelta(minutes=1)).seconds
+
+        config_entry = self.config_entry
+
+        light_state = self.data.light_state
+        if light_state is None:
+            self.logger.warning("No light state")
+            return
+
+        lights = lights or config_entry.options[Conf.MANAGED_ENTITIES]
+        assert lights is not None
+
+        tasks = []
+        for light in lights:
+            entity = self.hass.states.get(light)
+            if entity is None:
+                self.logger.warning(f"Entity {light} does not exist")
+                continue
+            if not is_on(self.hass, light):
+                continue
+
+            service_data = {ATTR_ENTITY_ID: light, ATTR_TRANSITION: transition}
+            service_data[ATTR_BRIGHTNESS] = round((light_state.brightness / 100) * 255)
+
+            preference = ("color_temp", "rgb", "xy", "hs")
+            match next(
+                (
+                    mode
+                    for mode in preference
+                    if mode in entity.attributes["supported_color_modes"]
+                ),
+                None,
+            ):
+                case "color_temp":
+                    service_data[ATTR_COLOR_TEMP_KELVIN] = light_state.temperature
+                case "rgb":
+                    service_data[ATTR_RGB_COLOR] = light_state.rgb
+                case "xy":
+                    service_data[ATTR_XY_COLOR] = light_state.xy
+                case "hs":
+                    service_data[ATTR_HS_COLOR] = light_state.hs
+                case None:
+                    self.logger.debug(
+                        f"{light} does not have any supported color mode, only setting "
+                        "brightness."
+                    )
+
+            self.logger.debug(
+                "Scheduling 'light.turn_on' with the following 'service_data': %s",
+                service_data,
+            )
+            tasks.append(
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        LIGHT_DOMAIN,
+                        SERVICE_TURN_ON,
+                        service_data,
+                        context=self._context,
+                    )
+                )
+            )
+        if tasks:
+            await asyncio.wait(tasks)

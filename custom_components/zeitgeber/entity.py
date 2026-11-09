@@ -16,7 +16,6 @@ class ZeitgeberEntity(CoordinatorEntity[ZeitgeberCoordinator]):
     def __init__(self, coordinator: ZeitgeberCoordinator) -> None:
         super().__init__(coordinator)
 
-        assert coordinator.config_entry is not None
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(coordinator.config_entry.data["uuid"]))},
             name="zeitgeber",
